@@ -1,98 +1,98 @@
-# Loki MCP Server
+# Loki MCP 服务器
 
-A Python-based [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol/mcp) server for querying Grafana Loki logs via HTTP API. This server enables AI assistants to access, query, and analyze log data from Loki directly through standardized MCP tools.
+基于 Python 的 [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol/mcp) 服务器，用于通过 HTTP API 查询 Grafana Loki 日志。该服务器使 AI 助手能够通过标准化的 MCP 工具直接访问、查询和分析 Loki 中的日志数据。
 
-## Features
+## 功能特性
 
-- 🔍 **Query Loki logs** with full LogQL support
-- 🏷️ **Browse labels and values** for data exploration
-- 🏢 **Multi-tenant support** with per-request tenant specification
-- ❤️ **Health monitoring** of Loki server status
-- 🔐 **Authentication support** (Basic Auth, Bearer Token)
-- ⚡ **Async HTTP client** for optimal performance
-- 🛡️ **Comprehensive error handling** and logging
+- 🔍 **查询 Loki 日志** - 完整的 LogQL 语法支持
+- 🏷️ **浏览标签和值** - 用于数据探索
+- 🏢 **多租户支持** - 支持按请求指定租户
+- ❤️ **健康监控** - Loki 服务器状态监控
+- 🔐 **认证支持** - 基本认证和 Bearer Token
+- ⚡ **异步 HTTP 客户端** - 优化性能
+- 🛡️ **全面错误处理** - 完善的错误处理和日志记录
 
-## Quick Start
+## 快速开始
 
-### Installation
+### 安装
 
-#### Option 1: Docker (Recommended)
+#### 选项 1: Docker（推荐）
 
 ```bash
-# Clone the repository
+# 克隆仓库
 git clone https://github.com/your-org/loki-mcp-server.git
 cd loki-mcp-server
 
-# Start with Docker Compose (includes Loki and Grafana)
+# 使用 Docker Compose 启动（包含 Loki 和 Grafana）
 docker-compose up -d
 
-# Or build and run just the MCP server
+# 或者只构建和运行 MCP 服务器
 docker build -t loki-mcp-server .
 docker run -e LOKI_ADDR=http://your-loki-server:3100 loki-mcp-server
 ```
 
-#### Option 2: Python Package
+#### 选项 2: Python 包
 
 ```bash
-# Install from PyPI (when published)
+# 从 PyPI 安装（发布后）
 pip install loki-mcp-server
 
-# Or install from source
+# 或从源码安装
 git clone https://github.com/your-org/loki-mcp-server.git
 cd loki-mcp-server
 pip install -e .
 ```
 
-### Configuration
+### 配置
 
-#### Server Mode Configuration
+#### 服务器模式配置
 
-The server supports two modes:
+服务器支持两种模式：
 
-**Stdio Mode (Default)** - For local process communication:
+**Stdio 模式（默认）** - 用于本地进程通信：
 ```bash
-export MCP_SERVER_MODE="stdio"  # Default mode
+export MCP_SERVER_MODE="stdio"  # 默认模式
 ```
 
-**SSE Mode** - For HTTP/network communication:
+**SSE 模式** - 用于 HTTP/网络通信：
 ```bash
 export MCP_SERVER_MODE="sse"
-export MCP_SERVER_HOST="0.0.0.0"  # Default: 0.0.0.0
-export MCP_SERVER_PORT="8080"     # Default: 8080
+export MCP_SERVER_HOST="0.0.0.0"  # 默认: 0.0.0.0
+export MCP_SERVER_PORT="8080"     # 默认: 8080
 ```
 
-#### Loki Configuration
+#### Loki 配置
 
-Configure Loki connection using environment variables:
+使用环境变量配置 Loki 连接：
 
 ```bash
 export LOKI_ADDR="https://your-loki-server.com"
-export LOKI_USERNAME="your-username"  # Optional
-export LOKI_PASSWORD="your-password"  # Optional
-# OR
-export LOKI_BEARER_TOKEN="your-token"  # Optional
+export LOKI_USERNAME="your-username"  # 可选
+export LOKI_PASSWORD="your-password"  # 可选
+# 或者
+export LOKI_BEARER_TOKEN="your-token"  # 可选
 ```
 
-Alternatively, create a `loki-config.yaml` file:
+或者创建 `loki-config.yaml` 文件：
 
 ```yaml
-# Server mode configuration
-server_mode: "sse"  # "stdio" or "sse"
+# 服务器模式配置
+server_mode: "sse"  # "stdio" 或 "sse"
 server_host: "0.0.0.0"
 server_port: 8080
 
-# Loki configuration
+# Loki 配置
 addr: "https://your-loki-server.com"
 username: "your-username"
 password: "your-password"
-# OR
+# 或者
 bearer_token: "your-token"
 ```
 
-### Usage with Claude Desktop
+### 与 Claude Desktop 配合使用
 
-#### Stdio Mode (Local)
-Add to your Claude Desktop configuration:
+#### Stdio 模式（本地）
+添加到 Claude Desktop 配置：
 
 ```json
 {
@@ -108,17 +108,17 @@ Add to your Claude Desktop configuration:
 }
 ```
 
-#### SSE Mode (Network)
-For SSE mode, first start the server:
+#### SSE 模式（网络）
+首先启动服务器：
 
 ```bash
-# Start server in SSE mode
+# 以 SSE 模式启动服务器
 export MCP_SERVER_MODE=sse
 export MCP_SERVER_PORT=8080
 loki-mcp-server
 ```
 
-Then configure Claude Desktop:
+然后配置 Claude Desktop：
 
 ```json
 {
@@ -131,45 +131,45 @@ Then configure Claude Desktop:
 }
 ```
 
-## Docker Deployment
+## Docker 部署
 
-### 🐳 Docker Compose (Recommended for Development)
+### 🐳 Docker Compose（推荐用于开发）
 
-The easiest way to get started is using Docker Compose, which includes Loki, Grafana, and the MCP server:
+使用 Docker Compose 是最简单的开始方式，它包含了 Loki、Grafana 和 MCP 服务器：
 
 ```bash
-# Clone the repository
+# 克隆仓库
 git clone https://github.com/your-org/loki-mcp-server.git
 cd loki-mcp-server
 
-# Copy environment file and customize
+# 复制环境变量文件并自定义
 cp env.example .env
-# Edit .env with your configuration
+# 编辑 .env 文件配置
 
-# Start all services
+# 启动所有服务
 docker-compose up -d
 
-# View logs
+# 查看日志
 docker-compose logs -f loki-mcp-server
 
-# Stop services
+# 停止服务
 docker-compose down
 ```
 
-This will start:
-- **Loki MCP Server** - The main MCP server in SSE mode (http://localhost:8080)
-- **Loki** - Log aggregation system (http://localhost:3100)
-- **Grafana** - Log visualization (http://localhost:3000, admin/admin)
+这将启动：
+- **Loki MCP 服务器** - 主要的 MCP 服务器，SSE 模式 (http://localhost:8080)
+- **Loki** - 日志聚合系统 (http://localhost:3100)
+- **Grafana** - 日志可视化 (http://localhost:3000, admin/admin)
 
-### 🏗️ Docker Build
+### 🏗️ Docker 构建
 
-Build and run just the MCP server container:
+仅构建和运行 MCP 服务器容器：
 
 ```bash
-# Build the image
+# 构建镜像
 docker build -t loki-mcp-server:latest .
 
-# Run with environment variables (SSE mode)
+# 使用环境变量运行（SSE 模式）
 docker run -d \
   --name loki-mcp-server \
   -p 8080:8080 \
@@ -179,38 +179,38 @@ docker run -d \
   -e LOKI_PASSWORD=your-password \
   loki-mcp-server:latest
 
-# Run with configuration file
+# 使用配置文件运行
 docker run -d \
   --name loki-mcp-server \
   -v $(pwd)/config:/app/config:ro \
   -v $(pwd)/logs:/app/logs \
   loki-mcp-server:latest
 
-# View logs
+# 查看日志
 docker logs -f loki-mcp-server
 ```
 
-### 🔧 Docker Configuration
+### 🔧 Docker 配置
 
-#### Environment Variables
-All configuration can be passed via environment variables:
+#### 环境变量
+所有配置都可以通过环境变量传递：
 
 ```bash
-# Server mode configuration
-MCP_SERVER_MODE=sse  # "stdio" or "sse"
-MCP_SERVER_HOST=0.0.0.0  # Only used in sse mode
-MCP_SERVER_PORT=8080     # Only used in sse mode
+# 服务器模式配置
+MCP_SERVER_MODE=sse  # "stdio" 或 "sse"
+MCP_SERVER_HOST=0.0.0.0  # 仅在 sse 模式下使用
+MCP_SERVER_PORT=8080     # 仅在 sse 模式下使用
 
-# Required
+# 必需配置
 LOKI_ADDR=http://loki:3100
 
-# Authentication (choose one)
+# 认证（选择一种）
 LOKI_USERNAME=your-username
 LOKI_PASSWORD=your-password
-# OR
+# 或者
 LOKI_BEARER_TOKEN=your-token
 
-# Optional settings
+# 可选设置
 LOKI_ORG_ID=your-org-id
 LOKI_TLS_SKIP_VERIFY=false
 LOKI_CONNECT_TIMEOUT=10.0
@@ -219,25 +219,25 @@ LOKI_DEFAULT_LIMIT=1000
 LOKI_MAX_LIMIT=5000
 ```
 
-#### Volume Mounts
-- **Configuration**: `-v /path/to/config:/app/config:ro`
-- **Logs**: `-v /path/to/logs:/app/logs`
-- **Environment file**: `-v /path/to/.env:/app/.env:ro`
+#### 卷挂载
+- **配置文件**: `-v /path/to/config:/app/config:ro`
+- **日志**: `-v /path/to/logs:/app/logs`
+- **环境变量文件**: `-v /path/to/.env:/app/.env:ro`
 
-#### Health Check
-The container includes a built-in health check:
+#### 健康检查
+容器包含内置健康检查：
 
 ```bash
-# Check container health
+# 检查容器健康状态
 docker inspect --format='{{.State.Health.Status}}' loki-mcp-server
 
-# Manual health check
+# 手动健康检查
 docker exec loki-mcp-server python -c "from loki_mcp_server.config import LokiConfig; print('OK' if LokiConfig().addr else 'FAIL')"
 ```
 
-### 🚀 Production Deployment
+### 🚀 生产环境部署
 
-For production environments:
+生产环境配置：
 
 ```yaml
 # docker-compose.prod.yml
@@ -273,276 +273,257 @@ volumes:
   logs:
 ```
 
-### 🐛 Troubleshooting Docker
+### 🐛 Docker 故障排除
 
-#### Common Issues
+#### 常见问题
 
-**Container won't start:**
+**容器无法启动：**
 ```bash
-# Check logs
+# 检查日志
 docker logs loki-mcp-server
 
-# Check configuration
+# 检查配置
 docker exec loki-mcp-server env | grep LOKI_
 ```
 
-**Connection issues:**
+**连接问题：**
 ```bash
-# Test Loki connectivity from container
+# 从容器测试 Loki 连接
 docker exec loki-mcp-server curl -f http://loki:3100/ready
 
-# Check network connectivity
+# 检查网络连接
 docker network ls
 docker network inspect loki-mcp-network
 ```
 
-**Permission issues:**
+**权限问题：**
 ```bash
-# Check file permissions
+# 检查文件权限
 docker exec loki-mcp-server ls -la /app/config /app/logs
 
-# Fix permissions
+# 修复权限
 sudo chown -R 1000:1000 ./config ./logs
 ```
 
-#### Debug Mode
+#### 调试模式
 
-Run container in debug mode:
+在调试模式下运行容器：
 
 ```bash
-# Interactive shell
+# 交互式 shell
 docker run -it --rm \
   -e LOKI_ADDR=http://loki:3100 \
   loki-mcp-server:latest \
   /bin/bash
 
-# Debug with Python
+# Python 调试
 docker run -it --rm \
   -e LOKI_ADDR=http://loki:3100 \
   loki-mcp-server:latest \
   python -c "from loki_mcp_server.config import LokiConfig; print(LokiConfig().get_safe_config())"
 ```
 
-## Available Tools
+## 可用工具
 
 ### 🔍 `query_loki`
-Query logs from Loki using LogQL syntax.
+使用 LogQL 语法查询 Loki 日志。
 
-**Parameters:**
-- `tenant` (required): Tenant name for multi-tenant setups
-- `query` (required): LogQL query string (e.g., `{job="app"} |= "error"`)
-- `start` (optional): Start time in ISO 8601 format
-- `end` (optional): End time in ISO 8601 format  
-- `limit` (optional): Maximum number of entries (default: 1000, max: 5000)
-- `direction` (optional): Query direction (`forward` or `backward`)
+**参数：**
+- `tenant`（必需）：多租户设置的租户名称
+- `query`（必需）：LogQL 查询字符串（例如：`{job="app"} |= "error"`）
+- `start`（可选）：ISO 8601 格式的开始时间
+- `end`（可选）：ISO 8601 格式的结束时间
+- `limit`（可选）：最大条目数（默认：1000，最大：5000）
+- `direction`（可选）：查询方向（`forward` 或 `backward`）
 
-**Example:**
+**示例：**
 ```
-Query: {job="nginx"} |= "error"
-Tenant: production
-Start: 2023-12-01T10:00:00Z
-End: 2023-12-01T11:00:00Z
-Limit: 100
+查询: {job="nginx"} |= "error"
+租户: production
+开始时间: 2023-12-01T10:00:00Z
+结束时间: 2023-12-01T11:00:00Z
+限制: 100
 ```
 
 ### 🏷️ `get_labels`
-Get all available labels for a tenant.
+获取租户的所有可用标签。
 
-**Parameters:**
-- `tenant` (required): Tenant name
+**参数：**
+- `tenant`（必需）：租户名称
 
 ### 🔖 `get_label_values`
-Get all values for a specific label.
+获取特定标签的所有值。
 
-**Parameters:**
-- `tenant` (required): Tenant name
-- `label` (required): Label name
+**参数：**
+- `tenant`（必需）：租户名称
+- `label`（必需）：标签名称
 
 ### 🏢 `get_tenants`
-Discover all available tenants.
+发现所有可用租户。
 
-**Parameters:** None
+**参数：** 无
 
 ### ❤️ `health_check`
-Check Loki server health and get current time.
+检查 Loki 服务器健康状态并获取当前时间。
 
-**Parameters:** None
+**参数：** 无
 
-## Configuration Options
+## 配置选项
 
-| Environment Variable | Description | Default |
-|---------------------|-------------|---------|
-| `LOKI_ADDR` | Loki server address | `http://localhost:3100` |
-| `LOKI_USERNAME` | Username for basic auth | None |
-| `LOKI_PASSWORD` | Password for basic auth | None |
-| `LOKI_BEARER_TOKEN` | Bearer token for auth | None |
-| `LOKI_BEARER_TOKEN_FILE` | Path to bearer token file | None |
-| `LOKI_ORG_ID` | Organization ID header | None |
-| `LOKI_TLS_SKIP_VERIFY` | Skip TLS verification | `false` |
-| `LOKI_CONNECT_TIMEOUT` | Connection timeout (seconds) | `10.0` |
-| `LOKI_READ_TIMEOUT` | Read timeout (seconds) | `30.0` |
-| `LOKI_DEFAULT_LIMIT` | Default query result limit | `1000` |
-| `LOKI_MAX_LIMIT` | Maximum query result limit | `5000` |
+| 环境变量 | 描述 | 默认值 |
+|---------|------|--------|
+| `LOKI_ADDR` | Loki 服务器地址 | `http://localhost:3100` |
+| `LOKI_USERNAME` | 基本认证用户名 | 无 |
+| `LOKI_PASSWORD` | 基本认证密码 | 无 |
+| `LOKI_BEARER_TOKEN` | Bearer token 认证 | 无 |
+| `LOKI_BEARER_TOKEN_FILE` | Bearer token 文件路径 | 无 |
+| `LOKI_ORG_ID` | 组织 ID 头部 | 无 |
+| `LOKI_TLS_SKIP_VERIFY` | 跳过 TLS 验证 | `false` |
+| `LOKI_CONNECT_TIMEOUT` | 连接超时（秒） | `10.0` |
+| `LOKI_READ_TIMEOUT` | 读取超时（秒） | `30.0` |
+| `LOKI_DEFAULT_LIMIT` | 默认查询结果限制 | `1000` |
+| `LOKI_MAX_LIMIT` | 最大查询结果限制 | `5000` |
 
-## Development
+## 开发
 
-### Setup Development Environment
+### 设置开发环境
 
 ```bash
-# Clone repository
+# 克隆仓库
 git clone https://github.com/your-org/loki-mcp-server.git
 cd loki-mcp-server
 
-# Create virtual environment
+# 创建虚拟环境
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
-# Install dependencies
+# 安装依赖
 pip install -e .[dev]
 ```
 
-### Running Tests
+### 运行测试
 
 ```bash
-# Run all tests
+# 运行所有测试
 pytest
 
-# Run with coverage
+# 运行覆盖率测试
 pytest --cov=loki_mcp_server
 
-# Run specific test file
+# 运行特定测试文件
 pytest tests/test_config.py
 ```
 
-### Code Quality
+### 代码质量
 
 ```bash
-# Format code
+# 格式化代码
 black src/ tests/
 
-# Lint code
+# 代码检查
 flake8 src/ tests/
 
-# Type checking
+# 类型检查
 mypy src/
 ```
 
-### Running the Server
+### 运行服务器
 
 ```bash
-# Run directly
+# 直接运行
 python -m loki_mcp_server.main
 
-# Or use the installed command
+# 或使用安装的命令
 loki-mcp-server
 ```
 
-## Architecture
+## 架构
 
-The server is built with:
+服务器构建基于：
 
-- **Python 3.8+** with modern async/await patterns
-- **httpx** for async HTTP client functionality
-- **pydantic** for configuration management and validation
-- **structlog** for structured logging
-- **MCP SDK** for Model Context Protocol implementation
+- **Python 3.8+** 使用现代 async/await 模式
+- **httpx** 异步 HTTP 客户端功能
+- **pydantic** 配置管理和验证
+- **structlog** 结构化日志
+- **MCP SDK** Model Context Protocol 实现
 
-### Project Structure
+### 项目结构
 
 ```
 src/loki_mcp_server/
 ├── __init__.py
-├── main.py              # MCP server entry point
-├── config.py            # Configuration management
+├── main.py              # MCP 服务器入口点
+├── config.py            # 配置管理
 ├── client/
-│   ├── loki_client.py   # Loki HTTP API client
-│   ├── http_client.py   # Generic HTTP client
-│   └── auth.py          # Authentication handling
-├── tools/               # MCP tool implementations
+│   ├── loki_client.py   # Loki HTTP API 客户端
+│   ├── http_client.py   # 通用 HTTP 客户端
+│   └── auth.py          # 认证处理
+├── server/              # 服务器实现
+│   ├── base_server.py   # 基础服务器类
+│   ├── stdio_server.py  # Stdio 模式服务器
+│   ├── sse_server.py    # SSE 模式服务器
+│   ├── http_server.py   # HTTP 服务器包装器
+│   └── factory.py       # 服务器工厂
+├── tools/               # MCP 工具实现
 │   ├── health_check.py
 │   ├── tenants.py
 │   ├── query.py
 │   └── labels.py
 └── utils/
-    ├── errors.py        # Error handling
-    └── logging.py       # Logging setup
+    ├── errors.py        # 错误处理
+    └── logging.py       # 日志设置
 ```
 
-## Migration from TypeScript Version
+## 故障排除
 
-This Python version replaces the previous TypeScript implementation with the following changes:
+### 常见问题
 
-### ⚠️ Breaking Changes
+**连接错误**
+- 验证 `LOKI_ADDR` 正确且可访问
+- 检查认证凭据
+- 确保 Loki 服务器运行正常
 
-- **Removed logcli dependency**: Now uses only HTTP API
-- **Removed `LOKI_TENANT_ID` environment variable**: Use `tenant` parameter in tools instead
-- **New tool parameters**: All query tools now require a `tenant` parameter
-- **Different package name**: `loki-mcp-server` (Python) vs `simple-loki-mcp` (TypeScript)
+**认证错误**
+- 验证用户名/密码或 bearer token
+- 检查多租户模式是否需要特定头部
 
-### Migration Steps
+**查询错误**
+- 验证 LogQL 语法
+- 确保租户存在且可访问
+- 检查时间范围参数
 
-1. **Update configuration**: Remove `LOKI_TENANT_ID` from environment variables
-2. **Update tool calls**: Add `tenant` parameter to all Loki query tools
-3. **Install Python version**: `pip install loki-mcp-server`
-4. **Update MCP configuration**: Change command to `loki-mcp-server`
+**工具未找到错误**
+- 验证 MCP 服务器正确注册
+- 检查工具名称完全匹配
+- 确保提供所有必需参数
 
-### New Features
+### 调试模式
 
-- **Tenant discovery**: `get_tenants` tool to find available tenants
-- **Health monitoring**: `health_check` tool for server status
-- **Better error handling**: Structured error responses with context
-- **Improved performance**: Async HTTP client with connection pooling
-
-## Troubleshooting
-
-### Common Issues
-
-**Connection Errors**
-- Verify `LOKI_ADDR` is correct and accessible
-- Check authentication credentials
-- Ensure Loki server is running and healthy
-
-**Authentication Errors**
-- Verify username/password or bearer token
-- Check if multi-tenant mode requires specific headers
-
-**Query Errors**
-- Validate LogQL syntax
-- Ensure tenant exists and is accessible
-- Check time range parameters
-
-**Tool Not Found Errors**
-- Verify MCP server is properly registered
-- Check tool names match exactly
-- Ensure all required parameters are provided
-
-### Debug Mode
-
-Enable debug logging:
+启用调试日志：
 
 ```bash
 export LOG_LEVEL=DEBUG
 loki-mcp-server
 ```
 
-## Contributing
+## 贡献
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes
-4. Add tests for new functionality
-5. Ensure all tests pass (`pytest`)
-6. Run code quality checks (`black`, `flake8`, `mypy`)
-7. Commit your changes (`git commit -m 'Add amazing feature'`)
-8. Push to the branch (`git push origin feature/amazing-feature`)
-9. Open a Pull Request
+1. Fork 仓库
+2. 创建功能分支 (`git checkout -b feature/amazing-feature`)
+3. 进行更改
+4. 为新功能添加测试
+5. 确保所有测试通过 (`pytest`)
+6. 运行代码质量检查 (`black`, `flake8`, `mypy`)
+7. 提交更改 (`git commit -m 'Add amazing feature'`)
+8. 推送到分支 (`git push origin feature/amazing-feature`)
+9. 打开 Pull Request
 
-## License
+## 许可证
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+此项目基于 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件。
 
-## Acknowledgments
+## 致谢
 
-- [Grafana Loki](https://grafana.com/oss/loki/) for the excellent log aggregation system
-- [Model Context Protocol](https://github.com/modelcontextprotocol/mcp) for the standardized AI integration framework
-- The original TypeScript implementation that inspired this Python version
+- [Grafana Loki](https://grafana.com/oss/loki/) 优秀的日志聚合系统
+- [Model Context Protocol](https://github.com/modelcontextprotocol/mcp) 标准化的 AI 集成框架
+- 启发此 Python 版本的原始 TypeScript 实现

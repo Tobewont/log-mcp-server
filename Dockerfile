@@ -1,6 +1,6 @@
 # Multi-stage build for Loki MCP Server
 # Stage 1: Builder - Install dependencies and build application
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 # Set build arguments
 ARG DEBIAN_FRONTEND=noninteractive
@@ -29,7 +29,7 @@ COPY README.md ./
 RUN pip install --no-cache-dir -e .
 
 # Stage 2: Runtime - Create minimal runtime image
-FROM python:3.11-slim as runtime
+FROM python:3.11-slim AS runtime
 
 # Set runtime arguments
 ARG DEBIAN_FRONTEND=noninteractive
