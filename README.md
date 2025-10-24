@@ -16,6 +16,23 @@ A Python-based [Model Context Protocol (MCP)](https://github.com/modelcontextpro
 
 ### Installation
 
+#### Option 1: Docker (Recommended)
+
+```bash
+# Clone the repository
+git clone https://github.com/your-org/loki-mcp-server.git
+cd loki-mcp-server
+
+# Start with Docker Compose (includes Loki and Grafana)
+docker-compose up -d
+
+# Or build and run just the MCP server
+docker build -t loki-mcp-server .
+docker run -e LOKI_ADDR=http://your-loki-server:3100 loki-mcp-server
+```
+
+#### Option 2: Python Package
+
 ```bash
 # Install from PyPI (when published)
 pip install loki-mcp-server
@@ -63,6 +80,191 @@ Add to your Claude Desktop configuration:
     }
   }
 }
+```
+
+## Docker Deployment
+
+### 🐳 Docker Compose (Recommended for Development)
+
+The easiest way to get started is using Docker Compose, which includes Loki, Grafana, and the MCP server:
+
+```bash
+# Clone the repository
+git clone https://github.com/your-org/loki-mcp-server.git
+cd loki-mcp-server
+
+# Copy environment file and customize
+cp env.example .env
+# Edit .env with your configuration
+
+# Start all services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f loki-mcp-server
+
+# Stop services
+docker-compose down
+```
+
+This will start:
+- **Loki MCP Server** - The main MCP server
+- **Loki** - Log aggregation system (http://localhost:3100)
+- **Grafana** - Log visualization (http://localhost:3000, admin/admin)
+
+### 🏗️ Docker Build
+
+Build and run just the MCP server container:
+
+```bash
+# Build the image
+docker build -t loki-mcp-server:latest .
+
+# Run with environment variables
+docker run -d \
+  --name loki-mcp-server \
+  -e LOKI_ADDR=http://your-loki-server:3100 \
+  -e LOKI_USERNAME=your-username \
+  -e LOKI_PASSWORD=your-password \
+  loki-mcp-server:latest
+
+# Run with configuration file
+docker run -d \
+  --name loki-mcp-server \
+  -v $(pwd)/config:/app/config:ro \
+  -v $(pwd)/logs:/app/logs \
+  loki-mcp-server:latest
+
+# View logs
+docker logs -f loki-mcp-server
+```
+
+### 🔧 Docker Configuration
+
+#### Environment Variables
+All configuration can be passed via environment variables:
+
+```bash
+# Required
+LOKI_ADDR=http://loki:3100
+
+# Authentication (choose one)
+LOKI_USERNAME=your-username
+LOKI_PASSWORD=your-password
+# OR
+LOKI_BEARER_TOKEN=your-token
+
+# Optional settings
+LOKI_ORG_ID=your-org-id
+LOKI_TLS_SKIP_VERIFY=false
+LOKI_CONNECT_TIMEOUT=10.0
+LOKI_READ_TIMEOUT=30.0
+LOKI_DEFAULT_LIMIT=1000
+LOKI_MAX_LIMIT=5000
+```
+
+#### Volume Mounts
+- **Configuration**: `-v /path/to/config:/app/config:ro`
+- **Logs**: `-v /path/to/logs:/app/logs`
+- **Environment file**: `-v /path/to/.env:/app/.env:ro`
+
+#### Health Check
+The container includes a built-in health check:
+
+```bash
+# Check container health
+docker inspect --format='{{.State.Health.Status}}' loki-mcp-server
+
+# Manual health check
+docker exec loki-mcp-server python -c "from loki_mcp_server.config import LokiConfig; print('OK' if LokiConfig().addr else 'FAIL')"
+```
+
+### 🚀 Production Deployment
+
+For production environments:
+
+```yaml
+# docker-compose.prod.yml
+version: '3.8'
+services:
+  loki-mcp-server:
+    image: loki-mcp-server:latest
+    restart: unless-stopped
+    environment:
+      - LOKI_ADDR=https://your-production-loki.com
+      - LOKI_BEARER_TOKEN_FILE=/run/secrets/loki_token
+    secrets:
+      - loki_token
+    volumes:
+      - ./config:/app/config:ro
+      - logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+secrets:
+  loki_token:
+    file: ./secrets/loki_token.txt
+
+volumes:
+  logs:
+```
+
+### 🐛 Troubleshooting Docker
+
+#### Common Issues
+
+**Container won't start:**
+```bash
+# Check logs
+docker logs loki-mcp-server
+
+# Check configuration
+docker exec loki-mcp-server env | grep LOKI_
+```
+
+**Connection issues:**
+```bash
+# Test Loki connectivity from container
+docker exec loki-mcp-server curl -f http://loki:3100/ready
+
+# Check network connectivity
+docker network ls
+docker network inspect loki-mcp-network
+```
+
+**Permission issues:**
+```bash
+# Check file permissions
+docker exec loki-mcp-server ls -la /app/config /app/logs
+
+# Fix permissions
+sudo chown -R 1000:1000 ./config ./logs
+```
+
+#### Debug Mode
+
+Run container in debug mode:
+
+```bash
+# Interactive shell
+docker run -it --rm \
+  -e LOKI_ADDR=http://loki:3100 \
+  loki-mcp-server:latest \
+  /bin/bash
+
+# Debug with Python
+docker run -it --rm \
+  -e LOKI_ADDR=http://loki:3100 \
+  loki-mcp-server:latest \
+  python -c "from loki_mcp_server.config import LokiConfig; print(LokiConfig().get_safe_config())"
 ```
 
 ## Available Tools

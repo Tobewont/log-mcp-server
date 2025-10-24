@@ -5,6 +5,7 @@ Loki MCP Server - Main entry point.
 A Model Context Protocol server for querying Grafana Loki logs via HTTP API.
 """
 import asyncio
+import signal
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +31,18 @@ server = Server("loki-mcp-server")
 
 async def main() -> None:
     """Main entry point for the Loki MCP server."""
+    # Setup signal handlers for graceful shutdown
+    shutdown_event = asyncio.Event()
+    
+    def signal_handler(signum, frame):
+        """Handle shutdown signals gracefully."""
+        logger.info("Received shutdown signal", signal=signum)
+        shutdown_event.set()
+    
+    # Register signal handlers
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
     try:
         # Load configuration
         config = LokiConfig()
@@ -85,11 +98,38 @@ async def main() -> None:
         
         # Start the server
         async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-            await server.run(
-                read_stream,
-                write_stream,
-                NotificationOptions(),
+            # Create server task
+            server_task = asyncio.create_task(
+                server.run(
+                    read_stream,
+                    write_stream,
+                    NotificationOptions(),
+                )
             )
+            
+            # Wait for either server completion or shutdown signal
+            done, pending = await asyncio.wait(
+                [server_task, asyncio.create_task(shutdown_event.wait())],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            # Cancel pending tasks
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            
+            # Check if server task completed with an exception
+            if server_task in done:
+                try:
+                    await server_task
+                except Exception as e:
+                    logger.error("Server task failed", error=str(e))
+                    raise
+            
+            logger.info("Server shutdown complete")
             
     except Exception as e:
         logger.error("Failed to start MCP server", error=str(e), exc_info=True)

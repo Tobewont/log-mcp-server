@@ -1,13 +1,167 @@
-version: "3"
+version: '3.8'
+
 services:
+  # Loki MCP Server
+  loki-mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: loki-mcp-server:latest
+    container_name: loki-mcp-server
+    restart: unless-stopped
+    
+    # Environment variables
+    environment:
+      - LOKI_ADDR=http://loki:3100
+      - LOKI_USERNAME=${LOKI_USERNAME:-}
+      - LOKI_PASSWORD=${LOKI_PASSWORD:-}
+      - LOKI_BEARER_TOKEN=${LOKI_BEARER_TOKEN:-}
+      - LOKI_ORG_ID=${LOKI_ORG_ID:-}
+      - LOKI_TLS_SKIP_VERIFY=${LOKI_TLS_SKIP_VERIFY:-false}
+      - LOKI_CONNECT_TIMEOUT=${LOKI_CONNECT_TIMEOUT:-10.0}
+      - LOKI_READ_TIMEOUT=${LOKI_READ_TIMEOUT:-30.0}
+      - LOKI_DEFAULT_LIMIT=${LOKI_DEFAULT_LIMIT:-1000}
+      - LOKI_MAX_LIMIT=${LOKI_MAX_LIMIT:-5000}
+    
+    # Volume mounts
+    volumes:
+      - ./config:/app/config:ro  # Configuration files (read-only)
+      - ./logs:/app/logs         # Log output directory
+      - ./.env:/app/.env:ro      # Environment file (optional)
+    
+    # Network configuration
+    networks:
+      - loki-mcp-network
+    
+    # Dependencies
+    depends_on:
+      loki:
+        condition: service_healthy
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; from loki_mcp_server.config import LokiConfig; config = LokiConfig(); sys.exit(0 if config.addr else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Local Loki instance for development/testing
   loki:
+    image: grafana/loki:2.9.0
     container_name: loki
-    image: grafana/loki:latest
+    restart: unless-stopped
+    
+    # Command with configuration
+    command: -config.file=/etc/loki/local-config.yaml
+    
+    # Port mapping (only for local development)
     ports:
       - "3100:3100"
-    command: -config.file=/etc/loki/local-config.yaml -config.expand-env=true
+    
+    # Volume mounts
     volumes:
       - loki-data:/loki
+      - ./docker/loki-config.yaml:/etc/loki/local-config.yaml:ro
+    
+    # Network configuration
+    networks:
+      - loki-mcp-network
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    
+    # Environment variables
+    environment:
+      - JAEGER_AGENT_HOST=
+      - JAEGER_ENDPOINT=
+      - JAEGER_SAMPLER_TYPE=
+      - JAEGER_SAMPLER_PARAM=
 
+  # Grafana for log visualization (optional)
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: grafana
+    restart: unless-stopped
+    
+    # Port mapping
+    ports:
+      - "3000:3000"
+    
+    # Volume mounts
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+    
+    # Network configuration
+    networks:
+      - loki-mcp-network
+    
+    # Dependencies
+    depends_on:
+      loki:
+        condition: service_healthy
+    
+    # Environment variables
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+# Networks
+networks:
+  loki-mcp-network:
+    driver: bridge
+    name: loki-mcp-network
+
+# Volumes
 volumes:
   loki-data:
+    name: loki-data
+    driver: local
+  grafana-data:
+    name: grafana-data
+    driver: local

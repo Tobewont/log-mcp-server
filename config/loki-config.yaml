@@ -1,0 +1,33 @@
+# Loki MCP Server Configuration
+# This file provides an example configuration for the Loki MCP Server
+
+# Loki server connection
+addr: "http://localhost:3100"
+
+# Authentication (choose one method)
+# Basic authentication
+# username: "your-username"
+# password: "your-password"
+
+# Bearer token authentication
+# bearer_token: "your-bearer-token"
+# bearer_token_file: "/path/to/token/file"
+
+# Organization/tenant settings
+# org_id: "your-org-id"
+
+# TLS settings
+# ca_file: "/path/to/ca.crt"
+# cert_file: "/path/to/client.crt"
+# key_file: "/path/to/client.key"
+# tls_skip_verify: false
+
+# HTTP client timeouts (in seconds)
+connect_timeout: 10.0
+read_timeout: 30.0
+write_timeout: 10.0
+pool_timeout: 10.0
+
+# Query limits
+default_limit: 1000
+max_limit: 5000
