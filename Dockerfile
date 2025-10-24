@@ -67,12 +67,14 @@ ENV PYTHONPATH=/app/src \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys; from loki_mcp_server.config import LokiConfig; config = LokiConfig(); sys.exit(0 if config.addr else 1)" || exit 1
+# Expose port for SSE mode (default 8080)
+EXPOSE 8080
 
-# Expose no ports (MCP uses stdio)
-# EXPOSE - MCP protocol uses stdin/stdout, no network ports needed
+# Health check - use HTTP endpoint in SSE mode, config check in stdio mode
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import sys, os, subprocess; from loki_mcp_server.config import LokiConfig; \
+        config = LokiConfig(); \
+        sys.exit(0 if config.server_mode == 'stdio' else subprocess.call(['curl', '-f', f'http://localhost:{config.server_port}/health'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))"
 
 # Set entrypoint and default command
 ENTRYPOINT ["python", "-m", "loki_mcp_server.main"]

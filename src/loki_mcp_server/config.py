@@ -3,7 +3,7 @@ Configuration management for Loki MCP Server.
 """
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import yaml
 from pydantic import Field, field_validator
@@ -23,6 +23,20 @@ class LokiConfig(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+    )
+    
+    # Server configuration
+    server_mode: Literal["stdio", "sse"] = Field(
+        default="stdio",
+        description="Server mode: stdio for process communication, sse for HTTP/SSE"
+    )
+    server_host: str = Field(
+        default="0.0.0.0",
+        description="Host address to bind the SSE server (only used in sse mode)"
+    )
+    server_port: int = Field(
+        default=8080,
+        description="Port to bind the SSE server (only used in sse mode)"
     )
     
     # Loki server configuration
@@ -119,12 +133,32 @@ class LokiConfig(BaseSettings):
             raise ValueError("Query limits must be positive integers")
         return v
     
+    @field_validator("server_port")
+    @classmethod
+    def validate_server_port(cls, v: int) -> int:
+        """Validate server port."""
+        if not (1 <= v <= 65535):
+            raise ValueError("Server port must be between 1 and 65535")
+        return v
+    
+    @field_validator("server_host")
+    @classmethod
+    def validate_server_host(cls, v: str) -> str:
+        """Validate server host."""
+        if not v.strip():
+            raise ValueError("Server host cannot be empty")
+        return v.strip()
+    
     def __init__(self, **kwargs):
         """Initialize configuration with environment variables and config files."""
         # Load from config files first (lower priority)
         config_data = self._load_config_files()
         
-        # Merge with provided kwargs (higher priority)
+        # Load server configuration from MCP_ environment variables
+        server_config = self._load_server_config_from_env()
+        config_data.update(server_config)
+        
+        # Merge with provided kwargs (highest priority)
         config_data.update(kwargs)
         
         # Initialize with merged data
@@ -136,6 +170,9 @@ class LokiConfig(BaseSettings):
         logger.info(
             "Configuration loaded",
             addr=self.addr,
+            server_mode=self.server_mode,
+            server_host=self.server_host,
+            server_port=self.server_port,
             has_username=bool(self.username),
             has_password=bool(self.password),
             has_bearer_token=bool(self.bearer_token),
@@ -182,6 +219,37 @@ class LokiConfig(BaseSettings):
                     )
         
         return config_data
+    
+    def _load_server_config_from_env(self) -> dict:
+        """Load server configuration from MCP_ environment variables."""
+        server_config = {}
+        
+        # Map MCP environment variables to config fields
+        env_mappings = {
+            "MCP_SERVER_MODE": "server_mode",
+            "MCP_SERVER_HOST": "server_host", 
+            "MCP_SERVER_PORT": "server_port",
+        }
+        
+        for env_var, config_key in env_mappings.items():
+            value = os.environ.get(env_var)
+            if value is not None:
+                # Convert port to integer
+                if config_key == "server_port":
+                    try:
+                        value = int(value)
+                    except ValueError:
+                        logger.warning(
+                            "Invalid port value in environment variable",
+                            env_var=env_var,
+                            value=value
+                        )
+                        continue
+                
+                server_config[config_key] = value
+                logger.debug("Server config loaded from environment", env_var=env_var, value=value)
+        
+        return server_config
     
     def _load_bearer_token_from_file(self) -> None:
         """Load bearer token from file if specified."""

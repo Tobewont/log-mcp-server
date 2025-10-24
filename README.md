@@ -45,7 +45,25 @@ pip install -e .
 
 ### Configuration
 
-Configure the server using environment variables:
+#### Server Mode Configuration
+
+The server supports two modes:
+
+**Stdio Mode (Default)** - For local process communication:
+```bash
+export MCP_SERVER_MODE="stdio"  # Default mode
+```
+
+**SSE Mode** - For HTTP/network communication:
+```bash
+export MCP_SERVER_MODE="sse"
+export MCP_SERVER_HOST="0.0.0.0"  # Default: 0.0.0.0
+export MCP_SERVER_PORT="8080"     # Default: 8080
+```
+
+#### Loki Configuration
+
+Configure Loki connection using environment variables:
 
 ```bash
 export LOKI_ADDR="https://your-loki-server.com"
@@ -58,6 +76,12 @@ export LOKI_BEARER_TOKEN="your-token"  # Optional
 Alternatively, create a `loki-config.yaml` file:
 
 ```yaml
+# Server mode configuration
+server_mode: "sse"  # "stdio" or "sse"
+server_host: "0.0.0.0"
+server_port: 8080
+
+# Loki configuration
 addr: "https://your-loki-server.com"
 username: "your-username"
 password: "your-password"
@@ -67,6 +91,7 @@ bearer_token: "your-token"
 
 ### Usage with Claude Desktop
 
+#### Stdio Mode (Local)
 Add to your Claude Desktop configuration:
 
 ```json
@@ -75,8 +100,32 @@ Add to your Claude Desktop configuration:
     "loki": {
       "command": "loki-mcp-server",
       "env": {
+        "MCP_SERVER_MODE": "stdio",
         "LOKI_ADDR": "https://your-loki-server.com"
       }
+    }
+  }
+}
+```
+
+#### SSE Mode (Network)
+For SSE mode, first start the server:
+
+```bash
+# Start server in SSE mode
+export MCP_SERVER_MODE=sse
+export MCP_SERVER_PORT=8080
+loki-mcp-server
+```
+
+Then configure Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "loki": {
+      "transport": "sse",
+      "url": "http://localhost:8080/sse"
     }
   }
 }
@@ -108,7 +157,7 @@ docker-compose down
 ```
 
 This will start:
-- **Loki MCP Server** - The main MCP server
+- **Loki MCP Server** - The main MCP server in SSE mode (http://localhost:8080)
 - **Loki** - Log aggregation system (http://localhost:3100)
 - **Grafana** - Log visualization (http://localhost:3000, admin/admin)
 
@@ -120,9 +169,11 @@ Build and run just the MCP server container:
 # Build the image
 docker build -t loki-mcp-server:latest .
 
-# Run with environment variables
+# Run with environment variables (SSE mode)
 docker run -d \
   --name loki-mcp-server \
+  -p 8080:8080 \
+  -e MCP_SERVER_MODE=sse \
   -e LOKI_ADDR=http://your-loki-server:3100 \
   -e LOKI_USERNAME=your-username \
   -e LOKI_PASSWORD=your-password \
@@ -145,6 +196,11 @@ docker logs -f loki-mcp-server
 All configuration can be passed via environment variables:
 
 ```bash
+# Server mode configuration
+MCP_SERVER_MODE=sse  # "stdio" or "sse"
+MCP_SERVER_HOST=0.0.0.0  # Only used in sse mode
+MCP_SERVER_PORT=8080     # Only used in sse mode
+
 # Required
 LOKI_ADDR=http://loki:3100
 

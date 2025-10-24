@@ -1,6 +1,11 @@
 # Loki MCP Server Configuration
 # This file provides an example configuration for the Loki MCP Server
 
+# Server mode configuration
+server_mode: "stdio"  # "stdio" for process communication, "sse" for HTTP/SSE
+server_host: "0.0.0.0"  # Host to bind SSE server (only used in sse mode)
+server_port: 8080       # Port to bind SSE server (only used in sse mode)
+
 # Loki server connection
 addr: "http://localhost:3100"
 
