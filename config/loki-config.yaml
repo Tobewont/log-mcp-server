@@ -1,10 +1,10 @@
 # Loki MCP Server Configuration
-# This file provides an example configuration for the Loki MCP Server
+# This file provides an example configuration for the FastMCP-based Loki MCP Server
 
-# Server mode configuration
-server_mode: "stdio"  # "stdio" for process communication, "sse" for HTTP/SSE
-server_host: "0.0.0.0"  # Host to bind SSE server (only used in sse mode)
-server_port: 8080       # Port to bind SSE server (only used in sse mode)
+# FastMCP configuration (optional - FastMCP auto-detects mode)
+fastmcp_debug: false      # Enable debug mode
+fastmcp_host: "127.0.0.1" # Host for HTTP mode (when port specified)
+fastmcp_port: 8000        # Port for HTTP mode (omit for stdio mode)
 
 # Loki server connection
 addr: "http://localhost:3100"

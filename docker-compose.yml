@@ -11,16 +11,16 @@ services:
     container_name: loki-mcp-server
     restart: unless-stopped
     
-    # Port mapping for SSE mode
+    # Port mapping for FastMCP HTTP mode
     ports:
-      - "8080:8080"  # HTTP/SSE server port
+      - "8000:8000"  # FastMCP HTTP server port
     
     # Environment variables
     environment:
-      # Server mode configuration
-      - MCP_SERVER_MODE=${MCP_SERVER_MODE:-sse}
-      - MCP_SERVER_HOST=${MCP_SERVER_HOST:-0.0.0.0}
-      - MCP_SERVER_PORT=${MCP_SERVER_PORT:-8080}
+      # FastMCP configuration (optional - auto-detects mode)
+      - FASTMCP_DEBUG=${FASTMCP_DEBUG:-false}
+      - FASTMCP_HOST=${FASTMCP_HOST:-0.0.0.0}
+      - FASTMCP_PORT=${FASTMCP_PORT:-8000}
       
       # Loki configuration
       - LOKI_ADDR=http://loki:3100
@@ -61,7 +61,7 @@ services:
     
     # Health check
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys; from loki_mcp_server.config import LokiConfig; config = LokiConfig(); sys.exit(0 if config.addr else 1)"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/ || python -c 'from loki_mcp_server.config import LokiConfig; LokiConfig()'"]
       interval: 30s
       timeout: 10s
       retries: 3

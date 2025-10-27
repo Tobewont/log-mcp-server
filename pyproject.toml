@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "loki-mcp-server"
 version = "1.0.0"
-description = "MCP server for querying Loki logs via HTTP API"
+description = "FastMCP-based server for querying Loki logs with stdio and HTTP/SSE support"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -24,7 +24,7 @@ classifiers = [
 ]
 requires-python = ">=3.8"
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp>=1.16.0",  # Required for FastMCP support
     "httpx>=0.25.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
@@ -44,7 +44,7 @@ dev = [
 ]
 
 [project.scripts]
-loki-mcp-server = "loki_mcp_server.main:main"
+loki-mcp-server = "loki_mcp_server.main:cli_main"
 
 [project.urls]
 Homepage = "https://github.com/ghrud92/loki-mcp"

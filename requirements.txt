@@ -1,5 +1,5 @@
 # Core dependencies
-mcp>=1.0.0
+mcp>=1.16.0  # Required for FastMCP support
 httpx>=0.25.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0

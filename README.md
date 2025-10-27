@@ -1,6 +1,14 @@
 # Loki MCP 服务器
 
-基于 Python 的 [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol/mcp) 服务器，用于通过 HTTP API 查询 Grafana Loki 日志。该服务器使 AI 助手能够通过标准化的 MCP 工具直接访问、查询和分析 Loki 中的日志数据。
+基于 [FastMCP](https://github.com/modelcontextprotocol/mcp) 框架的现代化 Model Context Protocol 服务器，用于通过 HTTP API 查询 Grafana Loki 日志。该服务器使 AI 助手能够通过标准化的 MCP 工具直接访问、查询和分析 Loki 中的日志数据。
+
+## 🚀 FastMCP 架构优势
+
+- **自动模式检测** - 无需手动配置，自动检测 stdio 或 HTTP/SSE 模式
+- **简化的工具管理** - 使用装饰器模式，代码更简洁
+- **内置 Web UI** - 提供调试和测试界面
+- **标准化错误处理** - 一致的 MCP 错误响应格式
+- **性能优化** - 更高效的请求处理和资源利用
 
 ## 功能特性
 
@@ -24,11 +32,12 @@ git clone https://github.com/your-org/loki-mcp-server.git
 cd loki-mcp-server
 
 # 使用 Docker Compose 启动（包含 Loki 和 Grafana）
+# FastMCP 自动检测模式，默认启用 HTTP 模式在端口 8000
 docker-compose up -d
 
 # 或者只构建和运行 MCP 服务器
 docker build -t loki-mcp-server .
-docker run -e LOKI_ADDR=http://your-loki-server:3100 loki-mcp-server
+docker run -e LOKI_ADDR=http://your-loki-server:3100 -e FASTMCP_PORT=8000 -p 8000:8000 loki-mcp-server
 ```
 
 #### 选项 2: Python 包

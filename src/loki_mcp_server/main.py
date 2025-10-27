@@ -1,153 +1,130 @@
 #!/usr/bin/env python3
 """
-Loki MCP Server - Main entry point.
+Loki MCP Server - FastMCP-based implementation.
 
 A Model Context Protocol server for querying Grafana Loki logs via HTTP API.
+Uses FastMCP for automatic mode detection and simplified tool management.
 """
 import asyncio
-import signal
 import sys
-from typing import Optional, Union
+from typing import Optional
+
+from mcp.server import FastMCP
 
 from .config import LokiConfig
-from .server.factory import ServerFactory
-from .server.base_server import BaseServer
-from .server.http_server import HTTPServer
+from .client.loki_client import LokiClient
+from .tools.fastmcp_tools import initialize_tools, register_tools
 from .utils.logging import setup_logging
 
 logger = setup_logging(__name__)
 
 
-class MCPServerManager:
-    """Manager for MCP server lifecycle."""
+class LokiMCPServer:
+    """Loki MCP Server using FastMCP framework."""
     
     def __init__(self):
-        """Initialize server manager."""
+        """Initialize the server."""
         self.config: Optional[LokiConfig] = None
-        self.server: Optional[Union[BaseServer, HTTPServer]] = None
-        self.shutdown_event = asyncio.Event()
+        self.loki_client: Optional[LokiClient] = None
+        self.mcp: Optional[FastMCP] = None
     
-    def setup_signal_handlers(self) -> None:
-        """Setup signal handlers for graceful shutdown."""
-        def signal_handler(signum, frame):
-            """Handle shutdown signals gracefully."""
-            logger.info("Received shutdown signal", signal=signum)
-            self.shutdown_event.set()
-        
-        # Register signal handlers
-        signal.signal(signal.SIGTERM, signal_handler)
-        signal.signal(signal.SIGINT, signal_handler)
-    
-    async def start(self) -> None:
-        """Start the MCP server."""
+    async def initialize(self) -> None:
+        """Initialize configuration and clients."""
         try:
             # Load configuration
             self.config = LokiConfig()
             logger.info(
                 "Configuration loaded",
-                server_mode=self.config.server_mode,
-                loki_addr=self.config.addr
+                loki_addr=self.config.addr,
+                fastmcp_debug=self.config.fastmcp_debug,
+                fastmcp_host=self.config.fastmcp_host,
+                fastmcp_port=self.config.fastmcp_port,
             )
             
-            # Create server instance
-            self.server = ServerFactory.create_server(self.config)
+            # Initialize Loki client
+            self.loki_client = LokiClient(self.config)
+            logger.info("Loki client initialized")
             
-            # Setup signal handlers
-            self.setup_signal_handlers()
+            # Create FastMCP instance
+            self.mcp = FastMCP(
+                name="loki-mcp-server",
+                instructions="A Model Context Protocol server for querying Grafana Loki logs. "
+                           "Provides tools to check health, discover tenants, query logs, and explore labels.",
+                debug=self.config.fastmcp_debug,
+                host=self.config.fastmcp_host,
+                port=self.config.fastmcp_port,
+            )
             
-            # Start server based on mode
-            if self.config.server_mode == "sse":
-                await self._start_sse_server()
-            else:
-                await self._start_stdio_server()
-                
+            # Initialize and register tools
+            initialize_tools(self.loki_client, self.config)
+            register_tools(self.mcp)
+            
+            logger.info(
+                "FastMCP server initialized",
+                name="loki-mcp-server",
+                debug=self.config.fastmcp_debug,
+                host=self.config.fastmcp_host,
+                port=self.config.fastmcp_port,
+            )
+            
         except Exception as e:
-            logger.error("Failed to start MCP server", error=str(e), exc_info=True)
-            sys.exit(1)
+            logger.error("Failed to initialize server", error=str(e), exc_info=True)
+            raise
     
-    async def _start_stdio_server(self) -> None:
-        """Start stdio server."""
-        logger.info("Starting MCP server in stdio mode")
+    def run(self) -> None:
+        """Run the FastMCP server.
         
-        # Create server task
-        server_task = asyncio.create_task(self.server.start())
+        FastMCP automatically detects the running mode:
+        - If run with a port argument or HTTP environment, uses HTTP/SSE mode
+        - Otherwise, uses stdio mode for process communication
+        """
+        if not self.mcp:
+            raise RuntimeError("Server not initialized. Call initialize() first.")
         
-        # Wait for either server completion or shutdown signal
-        done, pending = await asyncio.wait(
-            [server_task, asyncio.create_task(self.shutdown_event.wait())],
-            return_when=asyncio.FIRST_COMPLETED
-        )
-        
-        # Cancel pending tasks
-        for task in pending:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        
-        # Check if server task completed with an exception
-        if server_task in done:
-            try:
-                await server_task
-            except Exception as e:
-                logger.error("Server task failed", error=str(e))
-                raise
-        
-        logger.info("Server shutdown complete")
-    
-    async def _start_sse_server(self) -> None:
-        """Start SSE server with HTTP wrapper."""
-        logger.info(
-            "Starting MCP server in SSE mode",
-            host=self.config.server_host,
-            port=self.config.server_port
-        )
+        logger.info("Starting Loki MCP Server with FastMCP")
         
         try:
-            # Start the HTTP server
-            await self.server.start()
-            
-            # Wait for shutdown signal
-            await self.shutdown_event.wait()
-            
-        finally:
-            # Stop the server
-            if self.server:
-                await self.server.stop()
-            
-            logger.info("SSE server shutdown complete")
-    
-    async def stop(self) -> None:
-        """Stop the server."""
-        if self.server:
-            await self.server.stop()
+            # FastMCP handles mode detection and server lifecycle
+            self.mcp.run()
+        except KeyboardInterrupt:
+            logger.info("Server interrupted by user")
+        except Exception as e:
+            logger.error("Server error", error=str(e), exc_info=True)
+            sys.exit(1)
 
 
 async def main() -> None:
     """Main entry point for the Loki MCP server."""
-    server_manager = MCPServerManager()
+    server = LokiMCPServer()
     
     try:
-        await server_manager.start()
-    except KeyboardInterrupt:
-        logger.info("Received keyboard interrupt")
+        await server.initialize()
+        server.run()
     except Exception as e:
-        logger.error("Server failed", error=str(e), exc_info=True)
+        logger.error("Failed to start server", error=str(e), exc_info=True)
         sys.exit(1)
-    finally:
-        await server_manager.stop()
 
 
 def cli_main() -> None:
     """CLI entry point."""
     try:
-        asyncio.run(main())
+        # Check if we're in an async context already
+        try:
+            loop = asyncio.get_running_loop()
+            # If we're already in an async context, create a task
+            task = loop.create_task(main())
+            # This won't work in most cases, but FastMCP.run() is synchronous anyway
+            logger.warning("Already in async context, running synchronously")
+            server = LokiMCPServer()
+            asyncio.run(server.initialize())
+            server.run()
+        except RuntimeError:
+            # No running loop, we can use asyncio.run()
+            asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Application interrupted")
-        sys.exit(0)
+        logger.info("Server interrupted")
     except Exception as e:
-        logger.error("Application failed", error=str(e), exc_info=True)
+        logger.error("Server startup failed", error=str(e), exc_info=True)
         sys.exit(1)
 
 

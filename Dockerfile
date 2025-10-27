@@ -67,14 +67,14 @@ ENV PYTHONPATH=/app/src \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Expose port for SSE mode (default 8080)
-EXPOSE 8080
+# Expose port for FastMCP HTTP mode (default 8000)
+EXPOSE 8000
 
-# Health check - use HTTP endpoint in SSE mode, config check in stdio mode
+# Health check - use HTTP endpoint when FASTMCP_PORT is set, otherwise assume stdio mode
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys, os, subprocess; from loki_mcp_server.config import LokiConfig; \
-        config = LokiConfig(); \
-        sys.exit(0 if config.server_mode == 'stdio' else subprocess.call(['curl', '-f', f'http://localhost:{config.server_port}/health'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))"
+    CMD python -c "import sys, os, subprocess; \
+        port = os.environ.get('FASTMCP_PORT', '8000'); \
+        sys.exit(0 if not port else subprocess.call(['curl', '-f', f'http://localhost:{port}/'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))"
 
 # Set entrypoint and default command
 ENTRYPOINT ["python", "-m", "loki_mcp_server.main"]
@@ -82,7 +82,7 @@ CMD []
 
 # Add labels for metadata
 LABEL org.opencontainers.image.title="Loki MCP Server" \
-      org.opencontainers.image.description="Model Context Protocol server for Grafana Loki integration" \
+      org.opencontainers.image.description="FastMCP-based server for Grafana Loki integration with stdio and HTTP/SSE support" \
       org.opencontainers.image.version="1.0.0" \
       org.opencontainers.image.authors="Loki MCP Server Team" \
       org.opencontainers.image.source="https://github.com/your-org/loki-mcp-server" \
