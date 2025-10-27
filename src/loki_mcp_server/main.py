@@ -84,8 +84,30 @@ class LokiMCPServer:
         logger.info("Starting Loki MCP Server with FastMCP")
         
         try:
-            # FastMCP handles mode detection and server lifecycle
-            self.mcp.run()
+            # Log FastMCP configuration for debugging
+            logger.info(
+                "FastMCP configuration",
+                debug=self.config.fastmcp_debug,
+                host=self.config.fastmcp_host,
+                port=self.config.fastmcp_port,
+            )
+            
+            # Determine transport mode based on configuration
+            if self.config.fastmcp_port and self.config.fastmcp_port > 0:
+                transport = "sse"
+                logger.info(
+                    "Starting FastMCP in SSE mode",
+                    host=self.config.fastmcp_host,
+                    port=self.config.fastmcp_port
+                )
+            else:
+                transport = "stdio"
+                logger.info("Starting FastMCP in stdio mode")
+            
+            # Run FastMCP with explicit transport mode
+            logger.info("Calling FastMCP run method...", transport=transport)
+            self.mcp.run(transport=transport)
+            logger.info("FastMCP run method completed")
         except KeyboardInterrupt:
             logger.info("Server interrupted by user")
         except Exception as e:
