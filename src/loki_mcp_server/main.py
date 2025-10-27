@@ -93,12 +93,14 @@ class LokiMCPServer:
             sys.exit(1)
 
 
-async def main() -> None:
+def main() -> None:
     """Main entry point for the Loki MCP server."""
     server = LokiMCPServer()
     
     try:
-        await server.initialize()
+        # Initialize server in a new event loop
+        asyncio.run(server.initialize())
+        # Run FastMCP server (this will create its own event loop)
         server.run()
     except Exception as e:
         logger.error("Failed to start server", error=str(e), exc_info=True)
@@ -108,19 +110,7 @@ async def main() -> None:
 def cli_main() -> None:
     """CLI entry point."""
     try:
-        # Check if we're in an async context already
-        try:
-            loop = asyncio.get_running_loop()
-            # If we're already in an async context, create a task
-            task = loop.create_task(main())
-            # This won't work in most cases, but FastMCP.run() is synchronous anyway
-            logger.warning("Already in async context, running synchronously")
-            server = LokiMCPServer()
-            asyncio.run(server.initialize())
-            server.run()
-        except RuntimeError:
-            # No running loop, we can use asyncio.run()
-            asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         logger.info("Server interrupted")
     except Exception as e:

@@ -12,13 +12,16 @@ __author__ = "Loki MCP Server Team"
 __description__ = "FastMCP-based server for querying Loki logs with stdio and HTTP/SSE support"
 
 # Main exports
-from .main import LokiMCPServer, cli_main
 from .config import LokiConfig
 from .client.loki_client import LokiClient
 
+# Lazy import to avoid circular import issues when running as module
+def _get_server_classes():
+    from .main import LokiMCPServer, cli_main
+    return LokiMCPServer, cli_main
+
 __all__ = [
-    "LokiMCPServer",
-    "cli_main", 
     "LokiConfig",
     "LokiClient",
+    "_get_server_classes",
 ]

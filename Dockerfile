@@ -77,7 +77,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
         sys.exit(0 if not port else subprocess.call(['curl', '-f', f'http://localhost:{port}/'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))"
 
 # Set entrypoint and default command
-ENTRYPOINT ["python", "-m", "loki_mcp_server.main"]
+ENTRYPOINT ["python", "-c", "from loki_mcp_server.main import cli_main; cli_main()"]
 CMD []
 
 # Add labels for metadata

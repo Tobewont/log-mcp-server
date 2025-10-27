@@ -37,7 +37,7 @@ docker-compose up -d
 
 # 或者只构建和运行 MCP 服务器
 docker build -t loki-mcp-server .
-docker run -e LOKI_ADDR=http://your-loki-server:3100 -e FASTMCP_PORT=8000 -p 8000:8000 loki-mcp-server
+docker run -e LOKI_ADDR=http://your-loki-server:3100 -e FASTMCP_HOST=0.0.0.0 -e FASTMCP_PORT=8000 -p 8000:8000 loki-mcp-server
 ```
 
 #### 选项 2: Python 包
