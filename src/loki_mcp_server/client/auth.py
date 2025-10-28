@@ -49,13 +49,10 @@ class LokiAuth:
             headers["Authorization"] = f"Basic {auth_b64}"
             logger.debug("Using basic authentication", username=self.config.username)
         
-        # Add tenant/organization headers
+        # Add tenant header
         if tenant:
             headers["X-Scope-OrgID"] = tenant
             logger.debug("Using tenant scope", tenant=tenant)
-        elif self.config.org_id:
-            headers["X-Org-ID"] = self.config.org_id
-            logger.debug("Using organization ID", org_id=self.config.org_id)
         
         return headers
     

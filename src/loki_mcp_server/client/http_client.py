@@ -76,8 +76,6 @@ class AsyncHTTPClient:
         # Add tenant header if specified
         if tenant:
             headers["X-Scope-OrgID"] = tenant
-        elif self.config.org_id:
-            headers["X-Org-ID"] = self.config.org_id
             
         return headers
         

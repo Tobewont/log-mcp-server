@@ -8,10 +8,10 @@ def mock_loki_config():
     """Mock Loki configuration for testing."""
     return {
         "addr": "http://localhost:3100",
+        "tenants": "fake",
         "username": None,
         "password": None,
         "bearer_token": None,
-        "org_id": None,
         "tls_skip_verify": False,
     }
 

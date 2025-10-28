@@ -24,10 +24,10 @@ services:
       
       # Loki configuration
       - LOKI_ADDR=http://loki:3100
+      - LOKI_TENANTS=${LOKI_TENANTS:-fake}
       - LOKI_USERNAME=${LOKI_USERNAME:-}
       - LOKI_PASSWORD=${LOKI_PASSWORD:-}
       - LOKI_BEARER_TOKEN=${LOKI_BEARER_TOKEN:-}
-      - LOKI_ORG_ID=${LOKI_ORG_ID:-}
       - LOKI_TLS_SKIP_VERIFY=${LOKI_TLS_SKIP_VERIFY:-false}
       - LOKI_CONNECT_TIMEOUT=${LOKI_CONNECT_TIMEOUT:-10.0}
       - LOKI_READ_TIMEOUT=${LOKI_READ_TIMEOUT:-30.0}

@@ -9,6 +9,13 @@ fastmcp_port: 8000        # Port for HTTP mode (omit for stdio mode)
 # Loki server connection
 addr: "http://localhost:3100"
 
+# Multi-tenant configuration
+# Single tenant (default)
+tenants: "fake"
+
+# Multiple tenants (separated by |)
+# tenants: "tenant1|tenant2|tenant3"
+
 # Authentication (choose one method)
 # Basic authentication
 # username: "your-username"
@@ -18,8 +25,6 @@ addr: "http://localhost:3100"
 # bearer_token: "your-bearer-token"
 # bearer_token_file: "/path/to/token/file"
 
-# Organization/tenant settings
-# org_id: "your-org-id"
 
 # TLS settings
 # ca_file: "/path/to/ca.crt"

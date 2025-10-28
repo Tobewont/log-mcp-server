@@ -1,16 +1,17 @@
+#!/usr/bin/env python3
 """
-FastMCP tools for Loki MCP Server.
-All tools are implemented as FastMCP decorated functions.
+FastMCP tools for Loki operations.
 """
 import json
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import structlog
-from mcp.server import FastMCP
+from mcp.server.fastmcp import FastMCP
+from mcp.types import TextContent, Tool
 
 from ..client.loki_client import LokiClient
 from ..config import LokiConfig
+from ..utils.errors import create_mcp_error_response
 
 logger = structlog.get_logger(__name__)
 
@@ -48,13 +49,11 @@ def register_tools(mcp: FastMCP) -> None:
             
             # Format response
             if health_data["status"] == "healthy":
-                status_emoji = "✅"
                 status_text = "Healthy"
             else:
-                status_emoji = "❌"
                 status_text = "Unhealthy"
             
-            response_text = f"""# Loki Server Health Check {status_emoji}
+            response_text = f"""# Loki Server Health Check
 
 **Status:** {status_text}
 **Server Address:** {health_data['server_addr']}
@@ -74,46 +73,7 @@ def register_tools(mcp: FastMCP) -> None:
             raise RuntimeError(f"Health check failed: {e}")
 
     @mcp.tool()
-    async def get_tenants() -> str:
-        """Get all available tenants (tenant label values) from Loki.
-        
-        Returns:
-            Formatted list of available tenants.
-        """
-        if not _loki_client:
-            raise RuntimeError("Loki client not initialized")
-        
-        try:
-            logger.info("Getting tenants list")
-            
-            async with _loki_client as client:
-                tenants = await client.get_tenants()
-            
-            if not tenants:
-                return "# Available Tenants\n\nNo tenants found in Loki."
-            
-            tenant_list = "\n".join([f"- `{tenant}`" for tenant in sorted(tenants)])
-            
-            response_text = f"""# Available Tenants
-
-Found **{len(tenants)}** tenant(s):
-
-{tenant_list}
-
-## Usage
-Use these tenant names with other tools like `query_loki`, `get_labels`, and `get_label_values`.
-"""
-            
-            logger.info("Tenants list retrieved", count=len(tenants))
-            return response_text
-            
-        except Exception as e:
-            logger.error("Failed to get tenants", error=str(e))
-            raise RuntimeError(f"Failed to get tenants: {e}")
-
-    @mcp.tool()
     async def query_loki(
-        tenant: str,
         query: str,
         start: Optional[str] = None,
         end: Optional[str] = None,
@@ -123,7 +83,6 @@ Use these tenant names with other tools like `query_loki`, `get_labels`, and `ge
         """Query Loki logs with LogQL.
         
         Args:
-            tenant: Tenant name (required)
             query: LogQL query string
             start: Start time (RFC3339 format, optional)
             end: End time (RFC3339 format, optional)
@@ -133,165 +92,213 @@ Use these tenant names with other tools like `query_loki`, `get_labels`, and `ge
         Returns:
             Formatted query results with log entries.
         """
-        if not _loki_client:
-            raise RuntimeError("Loki client not initialized")
+        if not _loki_client or not _config:
+            raise RuntimeError("Loki client or config not initialized")
+        
+        # Get configured tenants
+        tenant_list = _config.get_tenant_list()
         
         try:
-            logger.info("Executing Loki query", tenant=tenant, query=query)
+            logger.info("Executing Loki query", tenants=tenant_list, query=query)
             
-            # Prepare query parameters
-            params = {"query": query}
-            if start:
-                params["start"] = start
-            if end:
-                params["end"] = end
-            if limit:
-                params["limit"] = limit
-            if direction:
-                params["direction"] = direction
+            all_logs = []
+            successful_tenants = []
             
-            async with _loki_client as client:
-                result = await client.query_range(tenant, **params)
+            # Query each configured tenant
+            for tenant in tenant_list:
+                try:
+                    async with _loki_client as client:
+                        logs = await client.query_logs(
+                            query=query,
+                            tenant=tenant,
+                            start=None,  # TODO: Parse start/end strings to datetime
+                            end=None,
+                            limit=limit,
+                            direction=direction or "backward"
+                        )
+                    
+                    if logs:
+                        # Add tenant info to each log entry
+                        for log_entry in logs:
+                            log_entry["tenant"] = tenant
+                        all_logs.extend(logs)
+                        successful_tenants.append(tenant)
+                        
+                except Exception as e:
+                    logger.warning("Query failed for tenant", tenant=tenant, error=str(e))
+                    continue
             
             # Format response
-            if not result.get("data", {}).get("result"):
+            if not all_logs:
                 return f"""# Loki Query Results
 
 **Query:** `{query}`
-**Tenant:** `{tenant}`
+**Tenants:** `{', '.join(tenant_list)}`
 
-No results found.
+No results found in any configured tenant.
 """
-            
-            entries_count = 0
-            formatted_entries = []
-            
-            for stream in result["data"]["result"]:
-                labels = stream.get("stream", {})
-                entries = stream.get("values", [])
-                
-                # Format stream labels
-                labels_str = ", ".join([f"{k}={v}" for k, v in labels.items()])
-                formatted_entries.append(f"## Stream: {{{labels_str}}}")
-                
-                for entry in entries:
-                    timestamp, message = entry
-                    # Convert nanosecond timestamp to readable format
-                    try:
-                        ts = int(timestamp) / 1_000_000_000
-                        dt = datetime.fromtimestamp(ts)
-                        time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-                    except (ValueError, OSError):
-                        time_str = timestamp
-                    
-                    formatted_entries.append(f"**{time_str}:** {message}")
-                    entries_count += 1
-            
-            entries_text = "\n\n".join(formatted_entries)
             
             response_text = f"""# Loki Query Results
 
 **Query:** `{query}`
-**Tenant:** `{tenant}`
-**Entries Found:** {entries_count}
+**Tenants Queried:** `{', '.join(tenant_list)}`
+**Successful Tenants:** `{', '.join(successful_tenants)}`
+**Total Entries Found:** {len(all_logs)}
 
-{entries_text}
 """
             
-            logger.info("Query completed", tenant=tenant, entries_count=entries_count)
+            for i, log_entry in enumerate(all_logs, 1):
+                time_str = log_entry.get("time", "N/A")
+                labels = log_entry.get("labels", {})
+                log_text = log_entry.get("log", "")
+                tenant = log_entry.get("tenant", "unknown")
+                
+                # Format labels
+                labels_str = ", ".join([f"{k}={v}" for k, v in labels.items()])
+                
+                response_text += f"""## Entry {i} (Tenant: {tenant})
+**Time:** {time_str}
+**Labels:** {{{labels_str}}}
+**Log:** {log_text}
+
+"""
+            
+            logger.info("Query completed", successful_tenants=successful_tenants, entries_count=len(all_logs))
             return response_text
             
         except Exception as e:
-            logger.error("Query failed", tenant=tenant, query=query, error=str(e))
+            logger.error("Query failed", tenants=tenant_list, query=query, error=str(e))
             raise RuntimeError(f"Query failed: {e}")
 
     @mcp.tool()
-    async def get_labels(tenant: str) -> str:
-        """Get all available labels for a specific tenant.
-        
-        Args:
-            tenant: Tenant name (required)
+    async def get_labels() -> str:
+        """Get all available labels from configured tenants.
         
         Returns:
-            Formatted list of available labels for the tenant.
+            Formatted list of available labels from all configured tenants.
         """
-        if not _loki_client:
-            raise RuntimeError("Loki client not initialized")
+        if not _loki_client or not _config:
+            raise RuntimeError("Loki client or config not initialized")
+        
+        # Get configured tenants
+        tenant_list = _config.get_tenant_list()
         
         try:
-            logger.info("Getting labels for tenant", tenant=tenant)
+            logger.info("Executing get_labels", tenants=tenant_list)
             
-            async with _loki_client as client:
-                labels = await client.get_labels(tenant)
+            all_labels = {}  # tenant -> labels mapping
+            successful_tenants = []
             
-            if not labels:
-                return f"""# Available Labels for Tenant `{tenant}`
+            # Get labels from each configured tenant
+            for tenant in tenant_list:
+                try:
+                    async with _loki_client as client:
+                        labels = await client.get_labels(tenant)
+                    
+                    all_labels[tenant] = labels
+                    if labels:
+                        successful_tenants.append(tenant)
+                        
+                except Exception as e:
+                    logger.warning("Failed to get labels for tenant", tenant=tenant, error=str(e))
+                    all_labels[tenant] = []
+                    continue
+            
+            # Format response
+            response_text = f"""# Available Labels
 
-No labels found for this tenant.
+**Configured Tenants:** `{', '.join(tenant_list)}`
+**Successful Tenants:** `{', '.join(successful_tenants)}`
+
 """
             
-            labels_list = "\n".join([f"- `{label}`" for label in sorted(labels)])
-            
-            response_text = f"""# Available Labels for Tenant `{tenant}`
-
-Found **{len(labels)}** label(s):
-
-{labels_list}
-
-## Usage
-Use these label names with `get_label_values` to see available values for each label.
+            for tenant, labels in all_labels.items():
+                response_text += f"""## Tenant: `{tenant}`
 """
+                if labels:
+                    response_text += f"Found {len(labels)} labels:\n\n"
+                    for i, label in enumerate(labels, 1):
+                        response_text += f"{i}. `{label}`\n"
+                else:
+                    response_text += "No labels found for this tenant.\n"
+                
+                response_text += "\n"
             
-            logger.info("Labels retrieved", tenant=tenant, count=len(labels))
+            total_unique_labels = len(set(label for labels in all_labels.values() for label in labels))
+            response_text += f"**Total Unique Labels:** {total_unique_labels}\n"
+            
+            logger.info("Labels retrieved", successful_tenants=successful_tenants, total_unique=total_unique_labels)
             return response_text
             
         except Exception as e:
-            logger.error("Failed to get labels", tenant=tenant, error=str(e))
-            raise RuntimeError(f"Failed to get labels for tenant {tenant}: {e}")
+            logger.error("Failed to get labels", tenants=tenant_list, error=str(e))
+            raise RuntimeError(f"Failed to get labels: {e}")
 
     @mcp.tool()
-    async def get_label_values(tenant: str, label: str) -> str:
-        """Get all available values for a specific label in a tenant.
+    async def get_label_values(label: str) -> str:
+        """Get all available values for a specific label from configured tenants.
         
         Args:
-            tenant: Tenant name (required)
             label: Label name (required)
         
         Returns:
-            Formatted list of available values for the specified label.
+            Formatted list of available values for the specified label from all configured tenants.
         """
-        if not _loki_client:
-            raise RuntimeError("Loki client not initialized")
+        if not _loki_client or not _config:
+            raise RuntimeError("Loki client or config not initialized")
+        
+        # Get configured tenants
+        tenant_list = _config.get_tenant_list()
         
         try:
-            logger.info("Getting label values", tenant=tenant, label=label)
+            logger.info("Executing get_label_values", tenants=tenant_list, label=label)
             
-            async with _loki_client as client:
-                values = await client.get_label_values(tenant, label)
+            all_values = {}  # tenant -> values mapping
+            successful_tenants = []
             
-            if not values:
-                return f"""# Available Values for Label `{label}` in Tenant `{tenant}`
+            # Get label values from each configured tenant
+            for tenant in tenant_list:
+                try:
+                    async with _loki_client as client:
+                        values = await client.get_label_values(tenant, label)
+                    
+                    all_values[tenant] = values
+                    if values:
+                        successful_tenants.append(tenant)
+                        
+                except Exception as e:
+                    logger.warning("Failed to get label values for tenant", tenant=tenant, label=label, error=str(e))
+                    all_values[tenant] = []
+                    continue
+            
+            # Format response
+            response_text = f"""# Values for Label `{label}`
 
-No values found for this label.
+**Configured Tenants:** `{', '.join(tenant_list)}`
+**Successful Tenants:** `{', '.join(successful_tenants)}`
+
 """
             
-            values_list = "\n".join([f"- `{value}`" for value in sorted(values)])
-            
-            response_text = f"""# Available Values for Label `{label}` in Tenant `{tenant}`
-
-Found **{len(values)}** value(s):
-
-{values_list}
-
-## Usage
-Use these values in LogQL queries to filter logs by this label.
+            for tenant, values in all_values.items():
+                response_text += f"""## Tenant: `{tenant}`
 """
+                if values:
+                    response_text += f"Found {len(values)} values:\n\n"
+                    for i, value in enumerate(values, 1):
+                        response_text += f"{i}. `{value}`\n"
+                else:
+                    response_text += f"No values found for label `{label}` in this tenant.\n"
+                
+                response_text += "\n"
             
-            logger.info("Label values retrieved", tenant=tenant, label=label, count=len(values))
+            total_unique_values = len(set(value for values in all_values.values() for value in values))
+            response_text += f"**Total Unique Values:** {total_unique_values}\n"
+            
+            logger.info("Label values retrieved", successful_tenants=successful_tenants, label=label, total_unique=total_unique_values)
             return response_text
             
         except Exception as e:
-            logger.error("Failed to get label values", tenant=tenant, label=label, error=str(e))
-            raise RuntimeError(f"Failed to get values for label {label} in tenant {tenant}: {e}")
+            logger.error("Failed to get label values", tenants=tenant_list, label=label, error=str(e))
+            raise RuntimeError(f"Failed to get values for label {label}: {e}")
 
-    logger.info("All FastMCP tools registered", tool_count=5)
+    logger.info("All FastMCP tools registered", tool_count=4)

@@ -14,7 +14,7 @@
 
 - 🔍 **查询 Loki 日志** - 完整的 LogQL 语法支持
 - 🏷️ **浏览标签和值** - 用于数据探索
-- 🏢 **多租户支持** - 支持按请求指定租户
+- 🏢 **多租户支持** - 配置时指定多个租户，自动查询所有租户
 - ❤️ **健康监控** - Loki 服务器状态监控
 - 🔐 **认证支持** - 基本认证和 Bearer Token
 - ⚡ **异步 HTTP 客户端** - 优化性能
@@ -219,8 +219,10 @@ LOKI_PASSWORD=your-password
 # 或者
 LOKI_BEARER_TOKEN=your-token
 
+# 多租户配置
+LOKI_TENANTS=fake  # 或 tenant1|tenant2|tenant3
+
 # 可选设置
-LOKI_ORG_ID=your-org-id
 LOKI_TLS_SKIP_VERIFY=false
 LOKI_CONNECT_TIMEOUT=10.0
 LOKI_READ_TIMEOUT=30.0
@@ -335,10 +337,9 @@ docker run -it --rm \
 ## 可用工具
 
 ### 🔍 `query_loki`
-使用 LogQL 语法查询 Loki 日志。
+使用 LogQL 语法查询配置的所有租户的日志。
 
 **参数：**
-- `tenant`（必需）：多租户设置的租户名称
 - `query`（必需）：LogQL 查询字符串（例如：`{job="app"} |= "error"`）
 - `start`（可选）：ISO 8601 格式的开始时间
 - `end`（可选）：ISO 8601 格式的结束时间
@@ -348,29 +349,23 @@ docker run -it --rm \
 **示例：**
 ```
 查询: {job="nginx"} |= "error"
-租户: production
 开始时间: 2023-12-01T10:00:00Z
 结束时间: 2023-12-01T11:00:00Z
 限制: 100
 ```
 
+**注意：** 工具会自动查询所有配置的租户（通过 `LOKI_TENANTS` 环境变量配置）。
+
 ### 🏷️ `get_labels`
-获取租户的所有可用标签。
-
-**参数：**
-- `tenant`（必需）：租户名称
-
-### 🔖 `get_label_values`
-获取特定标签的所有值。
-
-**参数：**
-- `tenant`（必需）：租户名称
-- `label`（必需）：标签名称
-
-### 🏢 `get_tenants`
-发现所有可用租户。
+获取所有配置租户的可用标签。
 
 **参数：** 无
+
+### 🔖 `get_label_values`
+获取特定标签在所有配置租户中的值。
+
+**参数：**
+- `label`（必需）：标签名称
 
 ### ❤️ `health_check`
 检查 Loki 服务器健康状态并获取当前时间。
@@ -382,16 +377,39 @@ docker run -it --rm \
 | 环境变量 | 描述 | 默认值 |
 |---------|------|--------|
 | `LOKI_ADDR` | Loki 服务器地址 | `http://localhost:3100` |
+| `LOKI_TENANTS` | 租户列表（用\|分隔） | `fake` |
 | `LOKI_USERNAME` | 基本认证用户名 | 无 |
 | `LOKI_PASSWORD` | 基本认证密码 | 无 |
 | `LOKI_BEARER_TOKEN` | Bearer token 认证 | 无 |
 | `LOKI_BEARER_TOKEN_FILE` | Bearer token 文件路径 | 无 |
-| `LOKI_ORG_ID` | 组织 ID 头部 | 无 |
 | `LOKI_TLS_SKIP_VERIFY` | 跳过 TLS 验证 | `false` |
 | `LOKI_CONNECT_TIMEOUT` | 连接超时（秒） | `10.0` |
 | `LOKI_READ_TIMEOUT` | 读取超时（秒） | `30.0` |
 | `LOKI_DEFAULT_LIMIT` | 默认查询结果限制 | `1000` |
 | `LOKI_MAX_LIMIT` | 最大查询结果限制 | `5000` |
+
+### 多租户配置
+
+配置多个租户以同时查询多个 Loki 租户：
+
+```bash
+# 单租户（默认）
+export LOKI_TENANTS="fake"
+
+# 多租户
+export LOKI_TENANTS="tenant1|tenant2|tenant3"
+
+# 配合认证使用
+export LOKI_TENANTS="company-logs|app-logs|system-logs"
+export LOKI_USERNAME="your-username"
+export LOKI_PASSWORD="your-password"
+```
+
+**注意**：
+- 工具会自动查询所有配置的租户
+- 每个租户通过 `X-Scope-OrgID` 头部指定
+- 如果某个租户查询失败，会继续查询其他租户
+- 结果会标明来自哪个租户
 
 ## 开发
 

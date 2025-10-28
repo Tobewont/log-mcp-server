@@ -17,10 +17,11 @@ class TestLokiConfig:
         config = LokiConfig()
         
         assert config.addr == "http://localhost:3100"
+        assert config.tenants == "fake"
+        assert config.get_tenant_list() == ["fake"]
         assert config.username is None
         assert config.password is None
         assert config.bearer_token is None
-        assert config.org_id is None
         assert config.tls_skip_verify is False
         assert config.default_limit == 1000
         assert config.max_limit == 5000
@@ -28,17 +29,18 @@ class TestLokiConfig:
     def test_env_var_config(self, monkeypatch):
         """Test configuration from environment variables."""
         monkeypatch.setenv("LOKI_ADDR", "https://loki.example.com")
+        monkeypatch.setenv("LOKI_TENANTS", "tenant1|tenant2")
         monkeypatch.setenv("LOKI_USERNAME", "testuser")
         monkeypatch.setenv("LOKI_PASSWORD", "testpass")
-        monkeypatch.setenv("LOKI_ORG_ID", "test-org")
         monkeypatch.setenv("LOKI_TLS_SKIP_VERIFY", "true")
         
         config = LokiConfig()
         
         assert config.addr == "https://loki.example.com"
+        assert config.tenants == "tenant1|tenant2"
+        assert config.get_tenant_list() == ["tenant1", "tenant2"]
         assert config.username == "testuser"
         assert config.password == "testpass"
-        assert config.org_id == "test-org"
         assert config.tls_skip_verify is True
     
     def test_config_file_loading(self, tmp_path):

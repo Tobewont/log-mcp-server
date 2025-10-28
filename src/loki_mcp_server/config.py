@@ -3,7 +3,7 @@ Configuration management for Loki MCP Server.
 """
 import os
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import yaml
 from pydantic import Field, field_validator
@@ -45,6 +45,12 @@ class LokiConfig(BaseSettings):
         description="Loki server address (e.g., http://localhost:3100)"
     )
     
+    # Multi-tenant configuration
+    tenants: str = Field(
+        default="fake",
+        description="Tenant IDs separated by | (e.g., 'tenant1|tenant2|tenant3'). Use 'fake' for single-tenant mode."
+    )
+    
     # Authentication
     username: Optional[str] = Field(
         default=None,
@@ -63,11 +69,6 @@ class LokiConfig(BaseSettings):
         description="Path to file containing bearer token"
     )
     
-    # Organization/tenant configuration
-    org_id: Optional[str] = Field(
-        default=None,
-        description="Organization ID header (X-Org-ID)"
-    )
     
     # TLS configuration
     ca_file: Optional[str] = Field(
@@ -168,17 +169,17 @@ class LokiConfig(BaseSettings):
         self._load_bearer_token_from_file()
         
         logger.info(
-            "Configuration loaded",
-            addr=self.addr,
-            fastmcp_debug=self.fastmcp_debug,
-            fastmcp_host=self.fastmcp_host,
-            fastmcp_port=self.fastmcp_port,
-            has_username=bool(self.username),
-            has_password=bool(self.password),
-            has_bearer_token=bool(self.bearer_token),
-            org_id=self.org_id,
-            tls_skip_verify=self.tls_skip_verify,
-        )
+                "Configuration loaded",
+                addr=self.addr,
+                fastmcp_debug=self.fastmcp_debug,
+                fastmcp_host=self.fastmcp_host,
+                fastmcp_port=self.fastmcp_port,
+                tenants=self.tenants,
+                has_username=bool(self.username),
+                has_password=bool(self.password),
+                has_bearer_token=bool(self.bearer_token),
+                tls_skip_verify=self.tls_skip_verify,
+            )
     
     def _load_config_files(self) -> dict:
         """Load configuration from YAML files."""
@@ -270,6 +271,20 @@ class LokiConfig(BaseSettings):
                     path=self.bearer_token_file,
                     error=str(e),
                 )
+    
+    def get_tenant_list(self) -> List[str]:
+        """Get list of configured tenants."""
+        if not self.tenants:
+            return ["fake"]
+        
+        # Split by | and clean up whitespace
+        tenant_list = [tenant.strip() for tenant in self.tenants.split("|") if tenant.strip()]
+        
+        # If empty after cleaning, return default
+        if not tenant_list:
+            return ["fake"]
+        
+        return tenant_list
     
     def get_safe_config(self) -> dict:
         """Get configuration dict with sensitive data redacted."""

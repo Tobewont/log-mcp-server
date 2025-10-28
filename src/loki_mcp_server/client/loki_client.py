@@ -42,20 +42,61 @@ class LokiClient:
             raise RuntimeError("LokiClient must be used as async context manager")
         return self._http_client
     
+    async def _check_ready_endpoint(self) -> None:
+        """Check the ready endpoint which returns plain text."""
+        import httpx
+        from urllib.parse import urljoin
+        
+        # Create a simple HTTP client for plain text response
+        timeout = httpx.Timeout(
+            connect=self.config.connect_timeout,
+            read=self.config.read_timeout,
+            write=self.config.write_timeout,
+            pool=self.config.pool_timeout,
+        )
+        
+        async with httpx.AsyncClient(timeout=timeout, verify=not self.config.tls_skip_verify) as client:
+            url = urljoin(self.config.addr, "/ready")
+            headers = {}
+            
+            # Add authentication if configured
+            if self.config.username and self.config.password:
+                import base64
+                auth_string = f"{self.config.username}:{self.config.password}"
+                auth_bytes = auth_string.encode("utf-8")
+                auth_b64 = base64.b64encode(auth_bytes).decode("ascii")
+                headers["Authorization"] = f"Basic {auth_b64}"
+            elif self.config.bearer_token:
+                headers["Authorization"] = f"Bearer {self.config.bearer_token}"
+            
+            response = await client.get(url, headers=headers)
+            
+            # Check if the response is successful (200 OK)
+            if response.status_code != 200:
+                raise Exception(f"Ready endpoint returned {response.status_code}: {response.text}")
+    
     async def health_check(self) -> Dict[str, Any]:
         """Check Loki server health and get current time."""
         try:
             client = self._get_http_client()
             
-            # Use the ready endpoint for health check
-            response = await client.get("/ready")
+            # Use a simple endpoint that returns JSON - try metrics endpoint first
+            try:
+                # Try the metrics endpoint which should return JSON
+                response = await client.get("/loki/api/v1/labels")
+                loki_status = "healthy" if response.get("status") == "success" else "unknown"
+            except Exception:
+                # Fallback: just check if we can connect to the ready endpoint
+                # The ready endpoint returns plain text, so we'll handle it specially
+                await self._check_ready_endpoint()
+                loki_status = "healthy"
             
-            # Also get current time from Loki
+            # Get current time
             current_time = datetime.utcnow().isoformat() + "Z"
             
             return {
                 "status": "healthy",
-                "loki_status": response.get("status", "unknown"),
+                "loki_status": loki_status,
                 "current_time": current_time,
                 "server_addr": self.config.addr,
             }
@@ -69,28 +110,6 @@ class LokiClient:
                 "server_addr": self.config.addr,
             }
     
-    async def get_tenants(self) -> List[str]:
-        """Get list of all available tenants from tenant label values."""
-        try:
-            client = self._get_http_client()
-            
-            # Get all values for the 'tenant' label
-            # Note: This assumes tenants are identified by a 'tenant' label
-            response = await client.get("/loki/api/v1/label/tenant/values")
-            
-            if response.get("status") == "success" and "data" in response:
-                tenants = response["data"]
-                logger.info("Retrieved tenants", tenant_count=len(tenants))
-                return tenants
-            else:
-                logger.warning("No tenants found or unexpected response format")
-                return []
-                
-        except Exception as e:
-            logger.error("Failed to get tenants", error=str(e))
-            # If tenant label doesn't exist, return empty list
-            return []
-    
     async def query_logs(
         self,
         query: str,
@@ -99,7 +118,7 @@ class LokiClient:
         end: Optional[datetime] = None,
         limit: Optional[int] = None,
         direction: str = "backward",
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         """Query logs from Loki."""
         try:
             # Validate tenant
@@ -140,12 +159,92 @@ class LokiClient:
             )
             
             if response.get("status") == "success":
-                return self._format_query_response(response["data"])
+                # Extract logs from the response
+                logs = []
+                data = response.get("data", {})
+                results = data.get("result", [])
+                
+                for stream in results:
+                    stream_labels = stream.get("stream", {})
+                    values = stream.get("values", [])
+                    
+                    for timestamp_ns, log_line in values:
+                        # Convert nanosecond timestamp to datetime
+                        try:
+                            timestamp_s = int(timestamp_ns) / 1_000_000_000
+                            dt = datetime.fromtimestamp(timestamp_s)
+                            time_str = dt.isoformat() + "Z"
+                        except (ValueError, OSError):
+                            time_str = timestamp_ns
+                        
+                        logs.append({
+                            "time": time_str,
+                            "labels": stream_labels,
+                            "log": log_line,
+                        })
+                
+                return logs
             else:
                 raise LokiQueryError(f"Query failed: {response}")
                 
         except Exception as e:
             logger.error("Query execution failed", query=query, tenant=tenant, error=str(e))
+            raise
+    
+    async def query_range(
+        self,
+        tenant: str,
+        query: str,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        limit: Optional[int] = None,
+        direction: str = "backward",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Query range from Loki (raw response for compatibility)."""
+        try:
+            # Validate tenant
+            self.auth.validate_tenant_access(tenant)
+            
+            # Validate query
+            if not query.strip():
+                raise LokiValidationError("Query cannot be empty")
+            
+            # Validate limit
+            if limit is not None:
+                if limit <= 0:
+                    raise LokiValidationError("Limit must be positive")
+                if limit > self.config.max_limit:
+                    raise LokiValidationError(
+                        f"Limit {limit} exceeds maximum {self.config.max_limit}"
+                    )
+            else:
+                limit = self.config.default_limit
+            
+            # Build query parameters
+            params = {
+                "query": query,
+                "limit": str(limit),
+                "direction": direction,
+            }
+            
+            # Add time range if provided
+            if start:
+                params["start"] = start
+            if end:
+                params["end"] = end
+            
+            client = self._get_http_client()
+            response = await client.get(
+                "/loki/api/v1/query_range",
+                params=params,
+                tenant=tenant,
+            )
+            
+            return response
+                
+        except Exception as e:
+            logger.error("Query range failed", query=query, tenant=tenant, error=str(e))
             raise
     
     async def get_labels(self, tenant: str) -> List[str]:
@@ -156,8 +255,8 @@ class LokiClient:
             client = self._get_http_client()
             response = await client.get("/loki/api/v1/labels", tenant=tenant)
             
-            if response.get("status") == "success" and "data" in response:
-                labels = response["data"]
+            if response.get("status") == "success":
+                labels = response.get("data", [])
                 logger.info("Retrieved labels", tenant=tenant, label_count=len(labels))
                 return labels
             else:
@@ -184,8 +283,8 @@ class LokiClient:
                 tenant=tenant,
             )
             
-            if response.get("status") == "success" and "data" in response:
-                values = response["data"]
+            if response.get("status") == "success":
+                values = response.get("data", [])
                 logger.info(
                     "Retrieved label values",
                     tenant=tenant,
