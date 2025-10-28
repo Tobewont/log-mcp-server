@@ -85,9 +85,9 @@ def register_tools(mcp: FastMCP) -> None:
         Args:
             query: LogQL query string
             start: Start time (RFC3339 format, optional)
-            end: End time (RFC3339 format, optional)
-            limit: Maximum number of entries to return (optional)
-            direction: Query direction - 'forward' or 'backward' (optional)
+            end: End time (RFC3339 format, optional, defaults to current time)
+            limit: Maximum number of entries to return (optional, defaults to 100)
+            direction: Query direction - 'forward' or 'backward' (optional, defaults to 'backward')
         
         Returns:
             Formatted query results with log entries.
@@ -95,11 +95,44 @@ def register_tools(mcp: FastMCP) -> None:
         if not _loki_client or not _config:
             raise RuntimeError("Loki client or config not initialized")
         
+        from datetime import datetime, timedelta
+        
+        # Set default values
+        if limit is None:
+            limit = _config.default_limit
+        
+        if direction is None:
+            direction = "backward"
+        
+        # Set default time range if not specified
+        end_time = None
+        start_time = None
+        
+        if end is None:
+            # Default to current time
+            end_time = datetime.utcnow()
+        else:
+            # Parse end time string
+            try:
+                end_time = datetime.fromisoformat(end.replace('Z', '+00:00'))
+            except ValueError:
+                raise RuntimeError(f"Invalid end time format: {end}. Use RFC3339 format (e.g., 2023-12-01T10:00:00Z)")
+        
+        if start is None:
+            # Default to 1 hour before end time
+            start_time = end_time - timedelta(hours=1)
+        else:
+            # Parse start time string
+            try:
+                start_time = datetime.fromisoformat(start.replace('Z', '+00:00'))
+            except ValueError:
+                raise RuntimeError(f"Invalid start time format: {start}. Use RFC3339 format (e.g., 2023-12-01T10:00:00Z)")
+        
         # Get configured tenants
         tenant_list = _config.get_tenant_list()
         
         try:
-            logger.info("Executing Loki query", tenants=tenant_list, query=query)
+            logger.info("Executing Loki query", tenants=tenant_list, query=query, start=start_time.isoformat(), end=end_time.isoformat(), limit=limit)
             
             all_logs = []
             successful_tenants = []
@@ -111,10 +144,10 @@ def register_tools(mcp: FastMCP) -> None:
                         logs = await client.query_logs(
                             query=query,
                             tenant=tenant,
-                            start=None,  # TODO: Parse start/end strings to datetime
-                            end=None,
+                            start=start_time,
+                            end=end_time,
                             limit=limit,
-                            direction=direction or "backward"
+                            direction=direction
                         )
                     
                     if logs:
@@ -133,6 +166,8 @@ def register_tools(mcp: FastMCP) -> None:
                 return f"""# Loki Query Results
 
 **Query:** `{query}`
+**Time Range:** `{start_time.isoformat()}Z` to `{end_time.isoformat()}Z`
+**Limit:** {limit}
 **Tenants:** `{', '.join(tenant_list)}`
 
 No results found in any configured tenant.
@@ -141,6 +176,9 @@ No results found in any configured tenant.
             response_text = f"""# Loki Query Results
 
 **Query:** `{query}`
+**Time Range:** `{start_time.isoformat()}Z` to `{end_time.isoformat()}Z`
+**Limit:** {limit}
+**Direction:** {direction}
 **Tenants Queried:** `{', '.join(tenant_list)}`
 **Successful Tenants:** `{', '.join(successful_tenants)}`
 **Total Entries Found:** {len(all_logs)}

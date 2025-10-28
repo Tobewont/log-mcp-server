@@ -54,20 +54,15 @@ pip install -e .
 
 ### 配置
 
-#### 服务器模式配置
+#### FastMCP 配置
 
-服务器支持两种模式：
+服务器使用 FastMCP 框架，自动检测运行模式（stdio 或 HTTP/SSE）。可选配置：
 
-**Stdio 模式（默认）** - 用于本地进程通信：
 ```bash
-export MCP_SERVER_MODE="stdio"  # 默认模式
-```
-
-**SSE 模式** - 用于 HTTP/网络通信：
-```bash
-export MCP_SERVER_MODE="sse"
-export MCP_SERVER_HOST="0.0.0.0"  # 默认: 0.0.0.0
-export MCP_SERVER_PORT="8080"     # 默认: 8080
+# FastMCP 配置（可选）
+export FASTMCP_DEBUG="false"     # 调试模式，默认: false
+export FASTMCP_HOST="0.0.0.0"    # HTTP 模式监听地址，默认: 0.0.0.0
+export FASTMCP_PORT="8000"       # HTTP 模式端口，默认: 8000
 ```
 
 #### Loki 配置
@@ -85,13 +80,14 @@ export LOKI_BEARER_TOKEN="your-token"  # 可选
 或者创建 `loki-config.yaml` 文件：
 
 ```yaml
-# 服务器模式配置
-server_mode: "sse"  # "stdio" 或 "sse"
-server_host: "0.0.0.0"
-server_port: 8080
+# FastMCP 配置（可选）
+fastmcp_debug: false
+fastmcp_host: "0.0.0.0"
+fastmcp_port: 8000
 
 # Loki 配置
 addr: "https://your-loki-server.com"
+tenants: "fake"  # 或 "tenant1|tenant2|tenant3"
 username: "your-username"
 password: "your-password"
 # 或者
@@ -109,21 +105,22 @@ bearer_token: "your-token"
     "loki": {
       "command": "loki-mcp-server",
       "env": {
-        "MCP_SERVER_MODE": "stdio",
-        "LOKI_ADDR": "https://your-loki-server.com"
+        "LOKI_ADDR": "https://your-loki-server.com",
+        "LOKI_TENANTS": "fake"
       }
     }
   }
 }
 ```
 
-#### SSE 模式（网络）
+#### HTTP/SSE 模式（网络）
 首先启动服务器：
 
 ```bash
-# 以 SSE 模式启动服务器
-export MCP_SERVER_MODE=sse
-export MCP_SERVER_PORT=8080
+# 启动服务器（FastMCP 自动检测 HTTP 模式）
+export FASTMCP_HOST=0.0.0.0
+export FASTMCP_PORT=8000
+export LOKI_ADDR=https://your-loki-server.com
 loki-mcp-server
 ```
 
@@ -134,7 +131,7 @@ loki-mcp-server
   "mcpServers": {
     "loki": {
       "transport": "sse",
-      "url": "http://localhost:8080/sse"
+      "url": "http://localhost:8000/sse"
     }
   }
 }
@@ -166,7 +163,7 @@ docker-compose down
 ```
 
 这将启动：
-- **Loki MCP 服务器** - 主要的 MCP 服务器，SSE 模式 (http://localhost:8080)
+- **Loki MCP 服务器** - 主要的 MCP 服务器，FastMCP 自动模式检测 (http://localhost:8000)
 - **Loki** - 日志聚合系统 (http://localhost:3100)
 - **Grafana** - 日志可视化 (http://localhost:3000, admin/admin)
 
@@ -178,12 +175,14 @@ docker-compose down
 # 构建镜像
 docker build -t loki-mcp-server:latest .
 
-# 使用环境变量运行（SSE 模式）
+# 使用环境变量运行（HTTP 模式）
 docker run -d \
   --name loki-mcp-server \
-  -p 8080:8080 \
-  -e MCP_SERVER_MODE=sse \
+  -p 8000:8000 \
+  -e FASTMCP_HOST=0.0.0.0 \
+  -e FASTMCP_PORT=8000 \
   -e LOKI_ADDR=http://your-loki-server:3100 \
+  -e LOKI_TENANTS=fake \
   -e LOKI_USERNAME=your-username \
   -e LOKI_PASSWORD=your-password \
   loki-mcp-server:latest
@@ -205,10 +204,10 @@ docker logs -f loki-mcp-server
 所有配置都可以通过环境变量传递：
 
 ```bash
-# 服务器模式配置
-MCP_SERVER_MODE=sse  # "stdio" 或 "sse"
-MCP_SERVER_HOST=0.0.0.0  # 仅在 sse 模式下使用
-MCP_SERVER_PORT=8080     # 仅在 sse 模式下使用
+# FastMCP 配置（可选 - 自动检测模式）
+FASTMCP_DEBUG=false      # 调试模式
+FASTMCP_HOST=0.0.0.0     # HTTP 模式监听地址
+FASTMCP_PORT=8000        # HTTP 模式端口
 
 # 必需配置
 LOKI_ADDR=http://loki:3100
@@ -341,20 +340,22 @@ docker run -it --rm \
 
 **参数：**
 - `query`（必需）：LogQL 查询字符串（例如：`{job="app"} |= "error"`）
-- `start`（可选）：ISO 8601 格式的开始时间
-- `end`（可选）：ISO 8601 格式的结束时间
-- `limit`（可选）：最大条目数（默认：1000，最大：5000）
-- `direction`（可选）：查询方向（`forward` 或 `backward`）
+- `start`（可选）：ISO 8601 格式的开始时间（默认：当前时间前1小时）
+- `end`（可选）：ISO 8601 格式的结束时间（默认：当前时间）
+- `limit`（可选）：最大条目数（默认：100，最大：5000）
+- `direction`（可选）：查询方向（默认：`backward`）
 
 **示例：**
 ```
 查询: {job="nginx"} |= "error"
-开始时间: 2023-12-01T10:00:00Z
-结束时间: 2023-12-01T11:00:00Z
-限制: 100
+# 不指定时间范围时，自动查询最近1小时的日志
+# 默认返回100条日志
 ```
 
-**注意：** 工具会自动查询所有配置的租户（通过 `LOKI_TENANTS` 环境变量配置）。
+**注意：** 
+- 工具会自动查询所有配置的租户（通过 `LOKI_TENANTS` 环境变量配置）
+- 如果不指定时间范围，默认查询最近1小时的日志
+- 默认限制返回100条日志以提高性能
 
 ### 🏷️ `get_labels`
 获取所有配置租户的可用标签。
@@ -376,6 +377,11 @@ docker run -it --rm \
 
 | 环境变量 | 描述 | 默认值 |
 |---------|------|--------|
+| **FastMCP 配置** | | |
+| `FASTMCP_DEBUG` | 启用调试模式 | `false` |
+| `FASTMCP_HOST` | HTTP 模式监听地址 | `0.0.0.0` |
+| `FASTMCP_PORT` | HTTP 模式端口 | `8000` |
+| **Loki 配置** | | |
 | `LOKI_ADDR` | Loki 服务器地址 | `http://localhost:3100` |
 | `LOKI_TENANTS` | 租户列表（用\|分隔） | `fake` |
 | `LOKI_USERNAME` | 基本认证用户名 | 无 |
@@ -385,7 +391,7 @@ docker run -it --rm \
 | `LOKI_TLS_SKIP_VERIFY` | 跳过 TLS 验证 | `false` |
 | `LOKI_CONNECT_TIMEOUT` | 连接超时（秒） | `10.0` |
 | `LOKI_READ_TIMEOUT` | 读取超时（秒） | `30.0` |
-| `LOKI_DEFAULT_LIMIT` | 默认查询结果限制 | `1000` |
+| `LOKI_DEFAULT_LIMIT` | 默认查询结果限制 | `100` |
 | `LOKI_MAX_LIMIT` | 最大查询结果限制 | `5000` |
 
 ### 多租户配置
@@ -482,21 +488,15 @@ src/loki_mcp_server/
 ├── main.py              # MCP 服务器入口点
 ├── config.py            # 配置管理
 ├── client/
+│   ├── __init__.py
 │   ├── loki_client.py   # Loki HTTP API 客户端
 │   ├── http_client.py   # 通用 HTTP 客户端
 │   └── auth.py          # 认证处理
-├── server/              # 服务器实现
-│   ├── base_server.py   # 基础服务器类
-│   ├── stdio_server.py  # Stdio 模式服务器
-│   ├── sse_server.py    # SSE 模式服务器
-│   ├── http_server.py   # HTTP 服务器包装器
-│   └── factory.py       # 服务器工厂
 ├── tools/               # MCP 工具实现
-│   ├── health_check.py
-│   ├── tenants.py
-│   ├── query.py
-│   └── labels.py
+│   ├── __init__.py
+│   └── loki_tools.py    # FastMCP 工具定义
 └── utils/
+    ├── __init__.py
     ├── errors.py        # 错误处理
     └── logging.py       # 日志设置
 ```
@@ -533,24 +533,3 @@ export LOG_LEVEL=DEBUG
 loki-mcp-server
 ```
 
-## 贡献
-
-1. Fork 仓库
-2. 创建功能分支 (`git checkout -b feature/amazing-feature`)
-3. 进行更改
-4. 为新功能添加测试
-5. 确保所有测试通过 (`pytest`)
-6. 运行代码质量检查 (`black`, `flake8`, `mypy`)
-7. 提交更改 (`git commit -m 'Add amazing feature'`)
-8. 推送到分支 (`git push origin feature/amazing-feature`)
-9. 打开 Pull Request
-
-## 许可证
-
-此项目基于 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件。
-
-## 致谢
-
-- [Grafana Loki](https://grafana.com/oss/loki/) 优秀的日志聚合系统
-- [Model Context Protocol](https://github.com/modelcontextprotocol/mcp) 标准化的 AI 集成框架
-- 启发此 Python 版本的原始 TypeScript 实现

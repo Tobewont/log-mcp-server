@@ -108,7 +108,7 @@ class LokiConfig(BaseSettings):
     
     # Query limits
     default_limit: int = Field(
-        default=1000,
+        default=100,
         description="Default limit for query results"
     )
     max_limit: int = Field(

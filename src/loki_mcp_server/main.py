@@ -13,7 +13,7 @@ from mcp.server import FastMCP
 
 from .config import LokiConfig
 from .client.loki_client import LokiClient
-from .tools.fastmcp_tools import initialize_tools, register_tools
+from .tools.loki_tools import initialize_tools, register_tools
 from .utils.logging import setup_logging
 
 logger = setup_logging(__name__)
