@@ -78,18 +78,9 @@ class LokiClient:
     async def health_check(self) -> Dict[str, Any]:
         """Check Loki server health and get current time."""
         try:
-            client = self._get_http_client()
-            
-            # Use a simple endpoint that returns JSON - try metrics endpoint first
-            try:
-                # Try the metrics endpoint which should return JSON
-                response = await client.get("/loki/api/v1/labels")
-                loki_status = "healthy" if response.get("status") == "success" else "unknown"
-            except Exception:
-                # Fallback: just check if we can connect to the ready endpoint
-                # The ready endpoint returns plain text, so we'll handle it specially
-                await self._check_ready_endpoint()
-                loki_status = "healthy"
+            # Try the ready endpoint first (simpler and more reliable)
+            await self._check_ready_endpoint()
+            loki_status = "healthy"
             
             # Get current time
             current_time = datetime.utcnow().isoformat() + "Z"
