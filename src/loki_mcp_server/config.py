@@ -116,6 +116,18 @@ class LokiConfig(BaseSettings):
         description="Maximum limit for query results"
     )
     
+    # Default time range settings
+    default_time_range_minutes: int = Field(
+        default=30,
+        description="Default time range in minutes when start/end not specified"
+    )
+    
+    # Timezone settings
+    timezone: str = Field(
+        default="Asia/Shanghai",
+        description="Default timezone for time operations"
+    )
+    
     @field_validator("addr")
     @classmethod
     def validate_addr(cls, v: str) -> str:
@@ -126,12 +138,28 @@ class LokiConfig(BaseSettings):
             raise ValueError("Loki server address must start with http:// or https://")
         return v.rstrip("/")
     
-    @field_validator("default_limit", "max_limit")
+    @field_validator("default_limit", "max_limit", "default_time_range_minutes")
     @classmethod
     def validate_limits(cls, v: int) -> int:
-        """Validate query limits."""
+        """Validate query limits and time range."""
         if v <= 0:
-            raise ValueError("Query limits must be positive integers")
+            raise ValueError("Query limits and time range must be positive integers")
+        return v
+    
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, v: str) -> str:
+        """Validate timezone string."""
+        try:
+            import zoneinfo
+            zoneinfo.ZoneInfo(v)
+        except Exception:
+            # Fallback for older Python versions or invalid timezone
+            try:
+                import pytz
+                pytz.timezone(v)
+            except Exception:
+                raise ValueError(f"Invalid timezone: {v}")
         return v
     
     @field_validator("fastmcp_port")

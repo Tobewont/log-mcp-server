@@ -39,5 +39,11 @@ write_timeout: 10.0
 pool_timeout: 10.0
 
 # Query limits
-default_limit: 1000
+default_limit: 100
 max_limit: 5000
+
+# Default time range settings
+default_time_range_minutes: 30  # Default time range when start/end not specified
+
+# Timezone settings
+timezone: "Asia/Shanghai"  # Default timezone for time operations

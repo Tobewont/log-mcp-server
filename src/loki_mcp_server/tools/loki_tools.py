@@ -33,10 +33,10 @@ def register_tools(mcp: FastMCP) -> None:
     
     @mcp.tool()
     async def health_check() -> str:
-        """Check Loki server health status and get current time.
+        """Check Loki server health status and get current time in Shanghai timezone.
         
         Returns:
-            Formatted health status report with server information and current time.
+            Formatted health status report with server information and current time in configured timezone.
         """
         if not _loki_client:
             raise RuntimeError("Loki client not initialized")
@@ -84,13 +84,18 @@ def register_tools(mcp: FastMCP) -> None:
         
         Args:
             query: LogQL query string
-            start: Start time (RFC3339 format, optional)
-            end: End time (RFC3339 format, optional, defaults to current time)
-            limit: Maximum number of entries to return (optional, defaults to 100)
+            start: Start time (RFC3339 format, optional, defaults to 30 minutes before end time)
+            end: End time (RFC3339 format, optional, defaults to current time in Shanghai timezone)
+            limit: Maximum number of entries to return (optional, defaults to 100, takes priority over time range)
             direction: Query direction - 'forward' or 'backward' (optional, defaults to 'backward')
         
         Returns:
             Formatted query results with log entries.
+            
+        Note:
+            - When both limit and time range are applied, limit takes priority
+            - Default time range is 30 minutes from current time
+            - Times are handled in Asia/Shanghai timezone by default
         """
         if not _loki_client or not _config:
             raise RuntimeError("Loki client or config not initialized")
@@ -104,13 +109,31 @@ def register_tools(mcp: FastMCP) -> None:
         if direction is None:
             direction = "backward"
         
+        # Get current time in configured timezone for default end time
+        def get_current_time_in_timezone():
+            try:
+                # Try using zoneinfo (Python 3.9+)
+                import zoneinfo
+                tz = zoneinfo.ZoneInfo(_config.timezone)
+                return datetime.now(tz)
+            except ImportError:
+                # Fallback to pytz for older Python versions
+                try:
+                    import pytz
+                    tz = pytz.timezone(_config.timezone)
+                    return datetime.now(tz)
+                except Exception:
+                    # Fallback to UTC if timezone handling fails
+                    logger.warning("Failed to use configured timezone, falling back to UTC", timezone=_config.timezone)
+                    return datetime.utcnow()
+        
         # Set default time range if not specified
         end_time = None
         start_time = None
         
         if end is None:
-            # Default to current time
-            end_time = datetime.utcnow()
+            # Default to current time in configured timezone
+            end_time = get_current_time_in_timezone()
         else:
             # Parse end time string
             try:
@@ -119,8 +142,8 @@ def register_tools(mcp: FastMCP) -> None:
                 raise RuntimeError(f"Invalid end time format: {end}. Use RFC3339 format (e.g., 2023-12-01T10:00:00Z)")
         
         if start is None:
-            # Default to 1 hour before end time
-            start_time = end_time - timedelta(hours=1)
+            # Use configured default time range (default: 30 minutes before end time)
+            start_time = end_time - timedelta(minutes=_config.default_time_range_minutes)
         else:
             # Parse start time string
             try:

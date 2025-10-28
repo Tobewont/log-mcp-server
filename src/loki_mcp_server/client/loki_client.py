@@ -76,19 +76,20 @@ class LokiClient:
                 raise Exception(f"Ready endpoint returned {response.status_code}: {response.text}")
     
     async def health_check(self) -> Dict[str, Any]:
-        """Check Loki server health and get current time."""
+        """Check Loki server health and get current time in configured timezone."""
         try:
             # Try the ready endpoint first (simpler and more reliable)
             await self._check_ready_endpoint()
             loki_status = "healthy"
             
-            # Get current time
-            current_time = datetime.utcnow().isoformat() + "Z"
+            # Get current time in configured timezone
+            current_time = self._get_current_time()
             
             return {
                 "status": "healthy",
                 "loki_status": loki_status,
                 "current_time": current_time,
+                "timezone": self.config.timezone,
                 "server_addr": self.config.addr,
             }
             
@@ -97,9 +98,30 @@ class LokiClient:
             return {
                 "status": "unhealthy",
                 "error": str(e),
-                "current_time": datetime.utcnow().isoformat() + "Z",
+                "current_time": self._get_current_time(),
+                "timezone": self.config.timezone,
                 "server_addr": self.config.addr,
             }
+    
+    def _get_current_time(self) -> str:
+        """Get current time in configured timezone."""
+        try:
+            # Try using zoneinfo (Python 3.9+)
+            import zoneinfo
+            tz = zoneinfo.ZoneInfo(self.config.timezone)
+            now = datetime.now(tz)
+            return now.isoformat()
+        except ImportError:
+            # Fallback to pytz for older Python versions
+            try:
+                import pytz
+                tz = pytz.timezone(self.config.timezone)
+                now = datetime.now(tz)
+                return now.isoformat()
+            except Exception:
+                # Fallback to UTC if timezone handling fails
+                logger.warning("Failed to use configured timezone, falling back to UTC", timezone=self.config.timezone)
+                return datetime.utcnow().isoformat() + "Z"
     
     async def query_logs(
         self,
