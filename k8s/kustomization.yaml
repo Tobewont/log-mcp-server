@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Apply the core manifests required for a minimal deployment.
+# Optional manifests (ingress / hpa) are kept as `*.example.yaml` and
+# excluded from this base; uncomment to include after you've customised
+# them for your cluster.
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secret.example.yaml
+  - service.yaml
+  - deployment.yaml
+  # - ingress.example.yaml
+  # - hpa.example.yaml
+
+namespace: log-mcp
+
+commonLabels:
+  app.kubernetes.io/part-of: log-mcp
+
+images:
+  - name: log-mcp-server
+    newName: log-mcp-server
+    newTag: latest

@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: log-mcp-server-config
+  namespace: log-mcp
+  labels:
+    app.kubernetes.io/name: log-mcp-server
+data:
+  # ---- Backend selection -----------------------------------------------
+  LOG_BACKEND: "loki"
+
+  # ---- Loki connection -------------------------------------------------
+  # Single Loki: "http://loki:3100"
+  # Multiple Loki (Thanos-style fan-out): use '|' as separator.
+  # The configured tenants are queried in parallel against every cluster.
+  LOKI_ADDR: "http://loki.observability.svc.cluster.local:3100"
+  LOKI_TENANTS: "fake"
+  LOKI_TLS_SKIP_VERIFY: "false"
+  LOKI_CONNECT_TIMEOUT: "10.0"
+  LOKI_READ_TIMEOUT: "15.0"
+
+  # ---- Health cache (multi-cluster) -----------------------------------
+  # Only used when LOKI_ADDR has multiple pipe-separated addresses.
+  HEALTH_CHECK_INTERVAL: "300"
+  HEALTH_CHECK_TIMEOUT: "5"
+
+  # ---- Generic query / time settings -----------------------------------
+  LOG_DEFAULT_LIMIT: "100"
+  LOG_MAX_LIMIT: "5000"
+  LOG_DEFAULT_TIME_RANGE_MINUTES: "30"
+  LOG_TIMEZONE: "Asia/Shanghai"
+  LOG_LEVEL: "INFO"
+
+  # ---- MCP Transport ---------------------------------------------------
+  # streamable-http is the recommended MCP HTTP transport.
+  MCP_TRANSPORT: "streamable-http"
+  MCP_HOST: "0.0.0.0"
+  MCP_PORT: "8000"

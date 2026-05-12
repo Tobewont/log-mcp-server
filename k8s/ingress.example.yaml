@@ -1,0 +1,32 @@
+# Optional: expose the MCP streamable-http endpoint via Ingress.
+# Adjust the host and TLS section for your cluster's controller.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: log-mcp-server
+  namespace: log-mcp
+  labels:
+    app.kubernetes.io/name: log-mcp-server
+  annotations:
+    # streamable-http requires bidirectional streaming + long-lived
+    # connections; raise read/send timeouts on the Ingress.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - logs-mcp.example.com
+      secretName: log-mcp-server-tls
+  rules:
+    - host: logs-mcp.example.com
+      http:
+        paths:
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: log-mcp-server
+                port:
+                  number: 8000

@@ -1,49 +1,54 @@
-# Loki MCP Server Configuration
-# This file provides an example configuration for the FastMCP-based Loki MCP Server
+# Sample configuration file for log-mcp-server.
+# Loaded automatically when present at:
+#   $LOG_CONFIG_PATH (or $LOKI_CONFIG_PATH)
+#   ./loki-config.yaml
+#   ./.loki-config.yaml
+#   ~/.loki-config.yaml
+#
+# Priority: env vars > .env file > this YAML file > built-in defaults.
+# Both `loki_*` / `log_*` prefixes and bare names are accepted.
 
-# FastMCP configuration (optional - FastMCP auto-detects mode)
-fastmcp_debug: false      # Enable debug mode
-fastmcp_host: "127.0.0.1" # Host for HTTP mode (when port specified)
-fastmcp_port: 8000        # Port for HTTP mode (omit for stdio mode)
+# ---- MCP transport --------------------------------------------------------
+mcp_transport: "stdio"       # "stdio" | "sse" | "streamable-http"
+# mcp_host / mcp_port are only used by the HTTP transports (sse,
+# streamable-http); they are ignored when mcp_transport == "stdio".
+mcp_host: "127.0.0.1"        # Use "0.0.0.0" for network exposure
+mcp_port: 8000
+log_level: "INFO"            # DEBUG / INFO / WARNING / ERROR
 
-# Loki server connection
+# ---- Backend selection ----------------------------------------------------
+backend: "loki"             # Currently only "loki" is supported
+
+# ---- Loki backend ---------------------------------------------------------
 addr: "http://localhost:3100"
+tenants: "fake"             # Multi: "tenant-a|tenant-b|tenant-c"
 
-# Multi-tenant configuration
-# Single tenant (default)
-tenants: "fake"
-
-# Multiple tenants (separated by |)
-# tenants: "tenant1|tenant2|tenant3"
-
-# Authentication (choose one method)
-# Basic authentication
+# Authentication (pick at most one)
 # username: "your-username"
 # password: "your-password"
-
-# Bearer token authentication
 # bearer_token: "your-bearer-token"
 # bearer_token_file: "/path/to/token/file"
 
-
-# TLS settings
+# TLS
 # ca_file: "/path/to/ca.crt"
 # cert_file: "/path/to/client.crt"
 # key_file: "/path/to/client.key"
 # tls_skip_verify: false
 
-# HTTP client timeouts (in seconds)
+# HTTP timeouts (seconds)
 connect_timeout: 10.0
-read_timeout: 30.0
+read_timeout: 15.0
 write_timeout: 10.0
 pool_timeout: 10.0
 
-# Query limits
+# ---- Health cache (multi-cluster) ----------------------------------------
+# Only used when LOKI_ADDR contains multiple pipe-separated addresses.
+# Unhealthy clusters are automatically skipped for data queries.
+health_check_interval: 300   # background refresh interval (seconds)
+health_check_timeout: 5      # per-cluster probe timeout (seconds)
+
+# ---- Generic query / time settings ---------------------------------------
 default_limit: 100
 max_limit: 5000
-
-# Default time range settings
-default_time_range_minutes: 30  # Default time range when start/end not specified
-
-# Timezone settings
-timezone: "Asia/Shanghai"  # Default timezone for time operations
+default_time_range_minutes: 30
+timezone: "Asia/Shanghai"
