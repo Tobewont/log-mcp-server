@@ -1,5 +1,7 @@
 # Log MCP Server
 
+![python](https://img.shields.io/badge/python-3.12%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+
 [中文](README.md) | English
 
 A Log MCP Server based on the [Model Context Protocol](https://modelcontextprotocol.io) (built on [FastMCP](https://github.com/modelcontextprotocol/python-sdk)) that provides log query and analysis capabilities. The current implementation ships a **Grafana Loki** backend with **multi-Loki fan-out** queries and provides an extensible `LogBackend` interface so other log systems (Elasticsearch, CloudWatch, ClickHouse, …) can be plugged in.
