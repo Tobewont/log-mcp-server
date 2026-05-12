@@ -1,5 +1,7 @@
 # Log MCP Server
 
+![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+
 中文 | [English](README_EN.md)
 
 基于 [FastMCP](https://github.com/modelcontextprotocol/python-sdk) 的 Model Context Protocol 的 Log MCP Server，提供统一的日志查询工具。当前内置 **Grafana Loki** 后端（含**多 Loki 扇出查询**），并提供可扩展的 `LogBackend` 接口以便接入其他日志系统（Elasticsearch、CloudWatch、ClickHouse 等）。
