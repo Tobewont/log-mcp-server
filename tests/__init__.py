@@ -1,1 +1,1 @@
-"""Test package for loki_mcp_server."""
+"""Test package for log_mcp_server."""

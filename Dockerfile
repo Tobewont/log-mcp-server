@@ -1,89 +1,58 @@
-# Multi-stage build for Loki MCP Server
-# Stage 1: Builder - Install dependencies and build application
+# Multi-stage build for log-mcp-server using uv
 FROM python:3.11-slim AS builder
 
-# Set build arguments
-ARG DEBIAN_FRONTEND=noninteractive
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set working directory
 WORKDIR /build
 
-# Copy dependency files first (for better layer caching)
-COPY requirements.txt requirements-dev.txt pyproject.toml ./
-
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements.txt
-
-# Copy source code
+COPY pyproject.toml uv.lock ./
 COPY src/ ./src/
 COPY README.md ./
 
-# Install the application
-RUN pip install --no-cache-dir -e .
+RUN uv sync --frozen --no-dev --no-editable
 
-# Stage 2: Runtime - Create minimal runtime image
+# Stage 2: Runtime
 FROM python:3.11-slim AS runtime
 
-# Set runtime arguments
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Install runtime dependencies only
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Create non-root user
-RUN groupadd -r -g 1000 loki-mcp && \
-    useradd -r -u 1000 -g loki-mcp -m -d /app -s /bin/bash loki-mcp
+RUN groupadd -r -g 1000 log-mcp && \
+    useradd -r -u 1000 -g log-mcp -m -d /app -s /bin/bash log-mcp
 
-# Set working directory
 WORKDIR /app
 
-# Copy Python packages from builder stage
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /build/.venv /app/.venv
 
-# Copy application source
-COPY --from=builder --chown=loki-mcp:loki-mcp /build/src ./src
-COPY --from=builder --chown=loki-mcp:loki-mcp /build/README.md ./
-
-# Create directories for configuration and logs
 RUN mkdir -p /app/config /app/logs && \
-    chown -R loki-mcp:loki-mcp /app/config /app/logs
+    chown -R log-mcp:log-mcp /app/config /app/logs
 
-# Switch to non-root user
-USER loki-mcp
+USER log-mcp
 
-# Set environment variables
-ENV PYTHONPATH=/app/src \
+ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    MCP_TRANSPORT=streamable-http \
+    MCP_HOST=0.0.0.0 \
+    MCP_PORT=8000 \
+    LOG_LEVEL=INFO
 
-# Expose port for FastMCP HTTP mode (default 8000)
 EXPOSE 8000
 
-# Health check - use HTTP endpoint when FASTMCP_PORT is set, otherwise assume stdio mode
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys, os, subprocess; \
-        port = os.environ.get('FASTMCP_PORT', '8000'); \
-        sys.exit(0 if not port else subprocess.call(['curl', '-f', f'http://localhost:{port}/'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))"
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD python -c "import socket,os; s=socket.socket(); s.settimeout(3); \
+        s.connect(('127.0.0.1', int(os.environ.get('MCP_PORT','8000'))))" \
+        || exit 1
 
-# Set entrypoint and default command
-ENTRYPOINT ["python", "-c", "from loki_mcp_server.main import cli_main; cli_main()"]
+ENTRYPOINT ["log-mcp-server"]
 CMD []
 
-# Add labels for metadata
-LABEL org.opencontainers.image.title="Loki MCP Server" \
-      org.opencontainers.image.description="FastMCP-based server for Grafana Loki integration with stdio and HTTP/SSE support" \
+LABEL org.opencontainers.image.title="log-mcp-server" \
+      org.opencontainers.image.description="FastMCP-based log MCP server with pluggable backends" \
       org.opencontainers.image.version="1.0.0" \
-      org.opencontainers.image.authors="Loki MCP Server Team" \
-      org.opencontainers.image.source="https://github.com/your-org/loki-mcp-server" \
       org.opencontainers.image.licenses="MIT"
