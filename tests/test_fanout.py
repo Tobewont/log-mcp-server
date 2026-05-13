@@ -59,20 +59,39 @@ class StubBackend(LogBackend):
         }
 
     async def query_logs(
-        self, query, tenant, start, end, limit, direction, cluster_errors=None
+        self,
+        query,
+        tenant,
+        start,
+        end,
+        limit,
+        direction,
+        instance=None,
+        cluster_errors=None,
     ):
+        del instance
         if self.fail:
             raise RuntimeError(f"{self.cluster_id} query failure")
         return list(self._entries)
 
-    async def get_labels(self, tenant, start=None, end=None, cluster_errors=None):
+    async def get_labels(
+        self, tenant, start=None, end=None, instance=None, cluster_errors=None
+    ):
+        del instance
         if self.fail:
             raise RuntimeError(f"{self.cluster_id} labels failure")
         return list(self._labels)
 
     async def get_label_values(
-        self, tenant, label, start=None, end=None, cluster_errors=None
+        self,
+        tenant,
+        label,
+        start=None,
+        end=None,
+        instance=None,
+        cluster_errors=None,
     ):
+        del instance
         if self.fail:
             raise RuntimeError(f"{self.cluster_id} label values failure")
         return list(self._values)
@@ -323,6 +342,56 @@ async def test_fanout_skips_unhealthy_clusters_for_query():
             direction="backward",
         )
         assert [e.line for e in out] == ["a-line"]
+    finally:
+        await cache.stop()
+
+
+@pytest.mark.asyncio
+async def test_fanout_instance_restricts_to_single_cluster():
+    """When instance is given, only that cluster's results are returned."""
+    t0 = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    a = StubBackend("a", entries=[_entry(t0, "a-line")])
+    b = StubBackend("b", entries=[_entry(t0, "b-line")])
+    fan = FanoutBackend([a, b])
+    out = await fan.query_logs(
+        query="{x=\"y\"}",
+        tenant="t1",
+        start=t0 - timedelta(hours=1),
+        end=t0 + timedelta(hours=1),
+        limit=10,
+        direction="backward",
+        instance="b",
+    )
+    assert [e.line for e in out] == ["b-line"]
+
+
+@pytest.mark.asyncio
+async def test_fanout_instance_unknown_rejected():
+    a = StubBackend("a")
+    fan = FanoutBackend([a])
+    from log_mcp_server.utils.errors import ValidationError
+
+    with pytest.raises(ValidationError, match="Unknown instance"):
+        await fan.get_labels("t1", instance="nope")
+
+
+@pytest.mark.asyncio
+async def test_fanout_instance_overrides_health_filter():
+    """Explicit instance is honoured even if it's marked unhealthy."""
+    a = StubBackend("a", labels=["job"])
+    b = StubBackend("b", labels=["host"])
+    a.fail = True  # health probe fails
+    cache = HealthCache([a, b], interval=9999, probe_timeout=2)
+    await cache.start()
+    try:
+        # 'a' is unhealthy, but a successful query is still possible
+        # because StubBackend.fail only affects health_check / queries
+        # while .fail is True. To make this case sensible, flip .fail
+        # off for the actual data path:
+        a.fail = False
+        fan = FanoutBackend([a, b], health_cache=cache)
+        out = await fan.get_labels("t1", instance="a")
+        assert out == ["job"]
     finally:
         await cache.stop()
 

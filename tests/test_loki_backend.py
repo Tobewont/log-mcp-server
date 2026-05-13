@@ -196,6 +196,35 @@ class TestValidation:
                 direction="backward",
             )
 
+    @pytest.mark.asyncio
+    async def test_mismatched_instance_rejected(self, backend: LokiBackend):
+        with pytest.raises(ValidationError, match="Unknown instance"):
+            await backend.query_logs(
+                query='{a="b"}',
+                tenant="tenant-a",
+                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end=datetime(2025, 1, 1, tzinfo=timezone.utc),
+                limit=100,
+                direction="backward",
+                instance="other-host:3100",
+            )
+
+    @pytest.mark.asyncio
+    async def test_matching_instance_accepted(
+        self, backend: LokiBackend, sample_streams_response
+    ):
+        backend.http.get = AsyncMock(return_value=sample_streams_response)  # type: ignore[method-assign]
+        entries = await backend.query_logs(
+            query='{a="b"}',
+            tenant="tenant-a",
+            start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            limit=100,
+            direction="backward",
+            instance=backend.cluster_id,
+        )
+        assert len(entries) == 2
+
 
 class TestHealth:
     @pytest.mark.asyncio

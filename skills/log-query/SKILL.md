@@ -35,7 +35,9 @@ description: "通过 log-mcp-server（Loki 后端）查询应用/服务/Kubernet
 | `get_label_values` | 列出某标签在各租户的值 | `label` |
 | `health_check` | 查看后端/集群健康状态 | — |
 
-前三个工具的可选参数：`start`、`end`（RFC3339）、`tenant`。`query_logs` 还支持 `limit` 和 `direction`（`backward` / `forward`）。
+前三个工具的可选参数：`start`、`end`（RFC3339）、`tenant`、`instance`。`query_logs` 还支持 `limit` 和 `direction`（`backward` / `forward`）。
+
+> **`instance` 参数**：用户明确指定 Loki 实例时（例如"查 `loki.example.com` 上的日志"），传入对应的 cluster id（从 `health_check` 输出中获取）。指定后只查该实例，绕过多实例扇出。未指定时按原工作流并发查询所有健康实例。
 
 ## 推荐工作流（多租户）
 
@@ -53,6 +55,20 @@ description: "通过 log-mcp-server（Loki 后端）查询应用/服务/Kubernet
 - "查 namespace **operation-devops-prod** 的日志" → `namespace` / `k8s_namespace`
 
 如果只配了单租户，跳过步骤 1–2，直接调用 `query_logs`。
+
+### 用户指定 Loki 实例
+
+如果用户明确给出 Loki 域名/地址（例如"查 `loki.example.com` 的日志"、"用 `loki-bj` 那个实例"），先用 `health_check` 看实际的 cluster id，再带上 `instance` 参数：
+
+```
+query_logs(
+  tenant="<id>",
+  instance="loki.example.com",        # 来自 health_check 输出的 cluster id
+  query='{...}'
+)
+```
+
+这种场景下**不要扇出**——既快又精确。
 
 ## 时间窗口
 

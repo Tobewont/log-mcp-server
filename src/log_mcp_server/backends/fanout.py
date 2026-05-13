@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import structlog
 
+from ..utils.errors import ValidationError
 from .base import LogBackend, LogEntry
 
 if TYPE_CHECKING:
@@ -72,6 +73,40 @@ class FanoutBackend(LogBackend):
         if self._health_cache is not None:
             return self._health_cache.healthy_backends()
         return self._backends
+
+    @property
+    def cluster_ids(self) -> List[str]:
+        """All known cluster ids (regardless of health)."""
+        return [self._cluster_id(b) for b in self._backends]
+
+    def _resolve_instance(
+        self, active: List[LogBackend], instance: Optional[str]
+    ) -> List[LogBackend]:
+        """Filter ``active`` to a single backend matching ``instance``.
+
+        Returns ``active`` unchanged when ``instance`` is None.  Raises
+        ``ValidationError`` when ``instance`` does not match any
+        configured cluster.  Logs a warning (and still returns the match)
+        when the requested instance is currently unhealthy.
+        """
+        if not instance:
+            return active
+        match = next(
+            (b for b in self._backends if self._cluster_id(b) == instance),
+            None,
+        )
+        if match is None:
+            raise ValidationError(
+                f"Unknown instance {instance!r}. "
+                f"Configured: {', '.join(self.cluster_ids)}"
+            )
+        if match not in active:
+            logger.warning(
+                "Querying explicitly requested instance that is not "
+                "currently marked healthy",
+                instance=instance,
+            )
+        return [match]
 
     async def _run(self, backend: LogBackend, coro_factory):
         try:
@@ -171,9 +206,10 @@ class FanoutBackend(LogBackend):
         end: datetime,
         limit: int,
         direction: str,
+        instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
     ) -> List[LogEntry]:
-        active = self._active_backends()
+        active = self._resolve_instance(self._active_backends(), instance)
 
         async def call(backend: LogBackend) -> List[LogEntry]:
             return await backend.query_logs(
@@ -214,9 +250,10 @@ class FanoutBackend(LogBackend):
         tenant: str,
         start: Optional[datetime] = None,
         end: Optional[datetime] = None,
+        instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
     ) -> List[str]:
-        active = self._active_backends()
+        active = self._resolve_instance(self._active_backends(), instance)
 
         async def call(backend: LogBackend):
             return await backend.get_labels(tenant, start=start, end=end)
@@ -242,9 +279,10 @@ class FanoutBackend(LogBackend):
         label: str,
         start: Optional[datetime] = None,
         end: Optional[datetime] = None,
+        instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
     ) -> List[str]:
-        active = self._active_backends()
+        active = self._resolve_instance(self._active_backends(), instance)
 
         async def call(backend: LogBackend):
             return await backend.get_label_values(

@@ -210,6 +210,7 @@ def register_tools(mcp: FastMCP) -> None:
         limit: Optional[int] = None,
         direction: str = "backward",
         tenant: Optional[str] = None,
+        instance: Optional[str] = None,
     ) -> str:
         """Query logs from the specified tenant (or all tenants if omitted).
 
@@ -238,6 +239,11 @@ def register_tools(mcp: FastMCP) -> None:
             tenant: Tenant ID.  When specified only this tenant is
                 queried.  When omitted all configured tenants are queried
                 in parallel.
+            instance: Loki cluster id (e.g. ``host:port`` or hostname,
+                as shown by ``health_check``).  When specified, the query
+                runs against this single cluster only — bypassing fan-out
+                even in multi-Loki deployments.  Use this when the user
+                explicitly tells you which Loki to query.
 
         Returns:
             Markdown report with entries, plus any errors at the bottom.
@@ -288,6 +294,7 @@ def register_tools(mcp: FastMCP) -> None:
                 end=end_dt,
                 limit=effective_limit,
                 direction=direction,
+                instance=instance,
                 cluster_errors=cluster_errors,
             )
 
@@ -312,6 +319,7 @@ def register_tools(mcp: FastMCP) -> None:
             f"**Direction:** {direction}\n"
             f"**Tenants Queried:** `{', '.join(tenants)}`\n"
             f"**Successful Tenants:** `{', '.join(successful) or '-'}`\n"
+            f"**Instance:** `{instance or '*all healthy*'}`\n"
             f"**Total Entries:** {len(all_entries)}\n"
         )
 
@@ -338,6 +346,7 @@ def register_tools(mcp: FastMCP) -> None:
         start: Optional[str] = None,
         end: Optional[str] = None,
         tenant: Optional[str] = None,
+        instance: Optional[str] = None,
     ) -> str:
         """List label names from the specified tenant (or all tenants).
 
@@ -353,6 +362,8 @@ def register_tools(mcp: FastMCP) -> None:
             end: Optional time-range end (RFC3339).
             tenant: Tenant ID to query. When omitted all configured
                 tenants are queried in parallel.
+            instance: Loki cluster id to restrict to a single Loki when
+                multiple are configured.  Omit for default fan-out.
 
         Returns:
             Markdown report grouped by tenant.
@@ -363,6 +374,7 @@ def register_tools(mcp: FastMCP) -> None:
             end=end,
             heading="Available Labels",
             tenant=tenant,
+            instance=instance,
         )
 
     # ----- get_label_values ---------------------------------------------
@@ -372,6 +384,7 @@ def register_tools(mcp: FastMCP) -> None:
         start: Optional[str] = None,
         end: Optional[str] = None,
         tenant: Optional[str] = None,
+        instance: Optional[str] = None,
     ) -> str:
         """List values of a specific label from the specified tenant (or all).
 
@@ -385,6 +398,8 @@ def register_tools(mcp: FastMCP) -> None:
             end: Optional time-range end (RFC3339).
             tenant: Tenant ID to query. When omitted all configured
                 tenants are queried in parallel.
+            instance: Loki cluster id to restrict to a single Loki when
+                multiple are configured.  Omit for default fan-out.
 
         Returns:
             Markdown report grouped by tenant.
@@ -397,6 +412,7 @@ def register_tools(mcp: FastMCP) -> None:
             end=end,
             heading=f"Values for Label `{label}`",
             tenant=tenant,
+            instance=instance,
         )
 
     logger.info("All tools registered", tool_count=4)
@@ -412,6 +428,7 @@ async def _list_keys(
     end: Optional[str],
     heading: str,
     tenant: Optional[str] = None,
+    instance: Optional[str] = None,
 ) -> str:
     backend, config = _require_state()
 
@@ -440,13 +457,18 @@ async def _list_keys(
     ) -> List[str]:
         if label is None:
             return await backend.get_labels(
-                tenant, start=start_dt, end=end_dt, cluster_errors=cluster_errors
+                tenant,
+                start=start_dt,
+                end=end_dt,
+                instance=instance,
+                cluster_errors=cluster_errors,
             )
         return await backend.get_label_values(
             tenant,
             label,
             start=start_dt,
             end=end_dt,
+            instance=instance,
             cluster_errors=cluster_errors,
         )
 
@@ -458,6 +480,7 @@ async def _list_keys(
         f"**Backend:** `{backend.name}`",
         f"**Configured Tenants:** `{', '.join(tenants)}`",
         f"**Successful Tenants:** `{', '.join(successful) or '-'}`",
+        f"**Instance:** `{instance or '*all healthy*'}`",
     ]
     if start_dt and end_dt:
         parts.append(

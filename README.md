@@ -1,5 +1,7 @@
 # Log MCP Server
 
+![python](https://img.shields.io/badge/python-3.12%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+
 中文 | [English](README_EN.md)
 
 基于 [FastMCP](https://github.com/modelcontextprotocol/python-sdk) 的 Model Context Protocol 的 Log MCP Server，提供统一的日志查询工具。当前内置 **Grafana Loki** 后端（含**多 Loki 扇出查询**），并提供可扩展的 `LogBackend` 接口以便接入其他日志系统（Elasticsearch、CloudWatch、ClickHouse 等）。
@@ -61,6 +63,8 @@ uv run log-mcp-server
 
 > 标签完全由用户的日志数据决定，可以是 `namespace`、`app`、`job`、`env` 等任意自定义标签。AI 会根据用户的查询意图选择合适的标签进行发现和过滤。
 
+> **指定 Loki 实例**：当用户明确指出某个 Loki 实例时（例如"查 `loki.example.com` 上的日志"），所有 3 个查询工具都接受可选的 `instance` 参数，传入对应的 cluster id 即可绕过多实例扇出，**只查该实例**。Cluster id 可在 `health_check` 输出中查看。
+
 ### 🔍 `query_logs`
 
 按时间范围查询日志。指定 `tenant` 时只查该租户；省略则并发查询所有租户。
@@ -73,6 +77,7 @@ uv run log-mcp-server
 | `limit` | ❌ | **每个 tenant 返回条数上限**。多 Loki 扇出时，fanout 内部已先在每 tenant 内跨 cluster 合并、按时间排序、再截断到此上限。默认 `LOG_DEFAULT_LIMIT`，不得超过 `LOG_MAX_LIMIT` |
 | `direction` | ❌ | `backward`（默认，最新在前）或 `forward` |
 | `tenant` | ❌ | 指定租户 ID。**推荐在多租户场景下使用**，避免不必要的全租户扇出 |
+| `instance` | ❌ | 指定 Loki 实例（cluster id，例如 `loki-bj:3100` 或 `loki.example.com`，从 `health_check` 输出可见）。指定后**只查该实例**，绕过多 Loki 扇出 |
 
 返回 Markdown 报告：每条日志带 `Tenant` 和 `Cluster`（多 Loki 时）；文末 `Errors` 区列出每个失败的 tenant 和 cluster 错误（多 Loki 部分失败时）。
 
@@ -85,6 +90,7 @@ uv run log-mcp-server
 | `start` | ❌ | 可选时间范围起点，缩小查询面以避免大集群慢查询 |
 | `end` | ❌ | 可选时间范围终点 |
 | `tenant` | ❌ | 指定租户 ID，省略则查询所有租户 |
+| `instance` | ❌ | 指定 Loki 实例（cluster id），多 Loki 时只查该实例 |
 
 ### 🔖 `get_label_values`
 
@@ -96,6 +102,7 @@ uv run log-mcp-server
 | `start` | ❌ | 可选时间范围起点 |
 | `end` | ❌ | 可选时间范围终点 |
 | `tenant` | ❌ | 指定租户 ID，省略则查询所有租户 |
+| `instance` | ❌ | 指定 Loki 实例（cluster id），多 Loki 时只查该实例 |
 
 ### ❤️ `health_check`
 

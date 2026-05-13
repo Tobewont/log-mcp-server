@@ -1,5 +1,7 @@
 # Log MCP Server
 
+![python](https://img.shields.io/badge/python-3.12%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+
 [中文](README.md) | English
 
 A Log MCP Server based on the [Model Context Protocol](https://modelcontextprotocol.io) (built on [FastMCP](https://github.com/modelcontextprotocol/python-sdk)) that provides log query and analysis capabilities. The current implementation ships a **Grafana Loki** backend with **multi-Loki fan-out** queries and provides an extensible `LogBackend` interface so other log systems (Elasticsearch, CloudWatch, ClickHouse, …) can be plugged in.
@@ -60,6 +62,8 @@ Unhealthy clusters are **skipped automatically** (probed at startup and refreshe
 
 > Labels are entirely user-defined: `namespace`, `app`, `job`, `env`, etc. The AI selects the relevant label based on the user's intent — there is no hard-coded label name in the server.
 
+> **Targeting a specific Loki instance**: when the user explicitly names a Loki (e.g. "show me logs from `loki.example.com`"), pass its cluster id via the optional `instance` parameter (available on all three query tools). The query then runs against that single cluster only, bypassing fan-out. Cluster ids are visible in the `health_check` output.
+
 ### `query_logs`
 
 Query logs over a time range. When `tenant` is provided only that tenant is queried; otherwise all configured tenants are queried in parallel.
@@ -72,6 +76,7 @@ Query logs over a time range. When `tenant` is provided only that tenant is quer
 | `limit` | no | **Per-tenant** entry cap. With multi-Loki fan-out the entries are first merged across clusters and sorted by time within each tenant, then truncated to this limit. Defaults to `LOG_DEFAULT_LIMIT`; cannot exceed `LOG_MAX_LIMIT` |
 | `direction` | no | `backward` (newest first, default) or `forward` |
 | `tenant` | no | Tenant ID. **Strongly recommended** for multi-tenant deployments to avoid unnecessary fan-out |
+| `instance` | no | Loki cluster id (e.g. `loki-bj:3100` or `loki.example.com`, as shown by `health_check`). When given, the query is restricted to **this single cluster only** — bypassing fan-out |
 
 Returns a Markdown report. Each log entry carries `Tenant` and `Cluster` (when multiple Lokis are configured). Any partial failures (per-tenant or per-cluster) are listed at the bottom in an **Errors** section.
 
@@ -84,6 +89,7 @@ List the set of label names (de-duplicated). When `tenant` is provided only that
 | `start` | no | Optional time-range start. Narrows the search and reduces response size on large deployments |
 | `end` | no | Optional time-range end |
 | `tenant` | no | Tenant ID; omit to query all configured tenants |
+| `instance` | no | Loki cluster id; omit for default fan-out across healthy clusters |
 
 ### `get_label_values`
 
@@ -95,6 +101,7 @@ List all values of a given label (de-duplicated). When `tenant` is provided only
 | `start` | no | Optional time-range start |
 | `end` | no | Optional time-range end |
 | `tenant` | no | Tenant ID; omit to query all configured tenants |
+| `instance` | no | Loki cluster id; omit for default fan-out across healthy clusters |
 
 ### `health_check`
 
