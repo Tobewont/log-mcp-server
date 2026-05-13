@@ -52,22 +52,34 @@ class StubBackend(LogBackend):
         end: datetime,
         limit: int,
         direction: str,
+        instance=None,
         cluster_errors=None,
     ) -> List[LogEntry]:
+        del instance
         if tenant in self.fail_for:
             raise RuntimeError(f"tenant {tenant} broken")
         if cluster_errors is not None and tenant in self.partial_fail_for:
             cluster_errors[f"sub-of-{tenant}"] = "simulated cluster failure"
         return list(self._entries.get(tenant, []))
 
-    async def get_labels(self, tenant, start=None, end=None, cluster_errors=None):
+    async def get_labels(
+        self, tenant, start=None, end=None, instance=None, cluster_errors=None
+    ):
+        del instance
         if tenant in self.fail_for:
             raise RuntimeError(f"tenant {tenant} broken")
         return ["job", "level"] if tenant == "tenant-a" else ["host"]
 
     async def get_label_values(
-        self, tenant, label, start=None, end=None, cluster_errors=None
+        self,
+        tenant,
+        label,
+        start=None,
+        end=None,
+        instance=None,
+        cluster_errors=None,
     ):
+        del instance
         if tenant in self.fail_for:
             raise RuntimeError(f"tenant {tenant} broken")
         return [f"{label}-1", f"{label}-2"]
@@ -271,3 +283,48 @@ async def test_get_label_values_single_tenant():
     assert "tenant-a" in out
     assert "tenant-b" not in out
     assert "env-1" in out
+
+
+# ---------------------------------------------------------------------------
+# instance parameter tests
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_query_logs_instance_passed_through_to_backend():
+    """The tool should pass instance to the backend verbatim."""
+    captured: dict = {}
+
+    class CapturingBackend(StubBackend):
+        async def query_logs(self, **kw):  # type: ignore[override]
+            captured.update(kw)
+            return []
+
+        async def get_labels(self, *a, **kw):  # type: ignore[override]
+            return []
+
+        async def get_label_values(self, *a, **kw):  # type: ignore[override]
+            return []
+
+    backend = CapturingBackend(["tenant-a"])
+    tools, _ = _make_setup(backend)
+    await tools["query_logs"](
+        query='{a="b"}', tenant="tenant-a", instance="loki-bj:3100"
+    )
+    assert captured["instance"] == "loki-bj:3100"
+
+
+@pytest.mark.asyncio
+async def test_query_logs_instance_appears_in_header():
+    backend = StubBackend(["tenant-a"])
+    tools, _ = _make_setup(backend)
+    out = await tools["query_logs"](
+        query='{a="b"}', tenant="tenant-a", instance="loki-sh:3100"
+    )
+    assert "**Instance:** `loki-sh:3100`" in out
+
+
+@pytest.mark.asyncio
+async def test_query_logs_default_instance_marker():
+    backend = StubBackend(["tenant-a"])
+    tools, _ = _make_setup(backend)
+    out = await tools["query_logs"](query='{a="b"}', tenant="tenant-a")
+    assert "**Instance:** `*all healthy*`" in out

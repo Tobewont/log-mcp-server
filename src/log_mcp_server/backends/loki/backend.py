@@ -110,6 +110,18 @@ class LokiBackend(LogBackend):
             )
         return d
 
+    def _check_instance(self, instance: Optional[str]) -> None:
+        """Reject queries targeting a different cluster id.
+
+        Single-cluster backend: when the caller pinned the query to a
+        specific instance, it must match this backend's cluster id.
+        """
+        if instance and instance != self.cluster_id:
+            raise ValidationError(
+                f"Unknown instance {instance!r}. "
+                f"This backend serves cluster {self.cluster_id!r}."
+            )
+
     async def query_logs(
         self,
         query: str,
@@ -118,11 +130,13 @@ class LokiBackend(LogBackend):
         end: datetime,
         limit: int,
         direction: str,
+        instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
     ) -> List[LogEntry]:
         # Single-cluster backend: ``cluster_errors`` is ignored. Errors
         # are surfaced by raising instead.
         del cluster_errors
+        self._check_instance(instance)
         validate_tenant(tenant)
         if not query or not query.strip():
             raise ValidationError("Query cannot be empty")
@@ -186,9 +200,11 @@ class LokiBackend(LogBackend):
         tenant: str,
         start: Optional[datetime] = None,
         end: Optional[datetime] = None,
+        instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
     ) -> List[str]:
         del cluster_errors
+        self._check_instance(instance)
         validate_tenant(tenant)
         params: Dict[str, str] = {}
         if start:
@@ -213,9 +229,11 @@ class LokiBackend(LogBackend):
         label: str,
         start: Optional[datetime] = None,
         end: Optional[datetime] = None,
+        instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
     ) -> List[str]:
         del cluster_errors
+        self._check_instance(instance)
         validate_tenant(tenant)
         if not label or not label.strip():
             raise ValidationError("Label name cannot be empty")

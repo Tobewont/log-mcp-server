@@ -64,7 +64,11 @@ def _build_server(config: LogConfig) -> FastMCP:
             "that tenant. "
             "Labels are user-defined (e.g. app, job, env, namespace, etc.). "
             "This avoids slow fan-out across all tenants and yields fast, "
-            "precise results."
+            "precise results. "
+            "If the user explicitly names a Loki instance (e.g. "
+            "'loki.example.com' or 'loki:3100'), pass it as the optional "
+            "'instance' argument so the query is restricted to that single "
+            "cluster instead of fanning out."
         ),
         debug=is_debug,
         log_level=config.log_level,

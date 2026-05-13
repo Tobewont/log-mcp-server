@@ -101,6 +101,7 @@ class LogBackend(ABC):
         end: datetime,
         limit: int,
         direction: str,
+        instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
     ) -> List[LogEntry]:
         """Query logs for a single tenant.
@@ -111,6 +112,12 @@ class LogBackend(ABC):
         multi-cluster backends should populate it with
         ``{cluster_id: error_message}`` for partial failures that did
         not abort the whole call.
+
+        ``instance``: optional cluster id (e.g. ``host:port`` or hostname).
+        Multi-cluster backends restrict the query to the matching cluster
+        only when this is provided; single-cluster backends verify the
+        value matches their own cluster id (raising ``ValidationError``
+        otherwise) and ignore it when matched.
         """
 
     @abstractmethod
@@ -119,6 +126,7 @@ class LogBackend(ABC):
         tenant: str,
         start: Optional[datetime] = None,
         end: Optional[datetime] = None,
+        instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
     ) -> List[str]:
         """List label names for a tenant in the (optional) time range."""
@@ -130,6 +138,7 @@ class LogBackend(ABC):
         label: str,
         start: Optional[datetime] = None,
         end: Optional[datetime] = None,
+        instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
     ) -> List[str]:
         """List values of ``label`` for a tenant in the (optional) range."""
