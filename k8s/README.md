@@ -117,6 +117,25 @@ kubectl -n log-mcp port-forward svc/log-mcp-server 8000:8000
 
 客户端从路径自动识别协议（`/mcp` → streamable-http，`/sse` → SSE）。如果使用 Ingress，把 URL 改成你的对外地址；如果只在集群内部使用，直接用 `http://log-mcp-server.log-mcp:8000/mcp`。
 
+#### 客户端必须声明可见的租户子集（强制）
+
+服务端 `LOKI_TENANTS` 是上限。每个 MCP 客户端**必须**在请求头里声明可见租户子集，否则三个查询工具会直接拒绝（`No tenant scope is configured ...`）。`health_check` 不受影响，可用于诊断。
+
+```json
+{
+  "mcpServers": {
+    "logs": {
+      "url": "https://logs-mcp.example.com/mcp",
+      "headers": { "X-Allowed-Tenants": "team-a,team-b" }
+    }
+  }
+}
+```
+
+服务端将把这次请求的可见租户**强制限制**为 `team-a, team-b`（且必须是 `LOKI_TENANTS` 的子集）。这是纵深防御而非鉴权——能改 `mcp.json` 的人也能改 header；目的是迫使每个客户端显式声明意图，避免漫无目的的全租户扇出。Stdio 模式下用 `env.LOKI_CLIENT_TENANTS` 达到同样效果。
+
+> **建议只列当前业务真正需要的租户。** 不传 `tenant=` 时服务端会并行扇出到列表里所有租户：列得越多越慢、结果越混乱、`Errors` 越长。最佳实践是按业务拆多个客户端配置，每个客户端只列 1–3 个租户。
+
 ## 常见问题
 
 **Pod 反复 CrashLoopBackOff**：通常是配置缺失。先用 `kubectl logs` 看错误，最常见的是 `LOKI_ADDR` 不可达或认证失败。

@@ -67,7 +67,7 @@ uv run log-mcp-server
 
 ### 🔍 `query_logs`
 
-按时间范围查询日志。指定 `tenant` 时只查该租户；省略则并发查询所有租户。
+按时间范围查询日志。指定 `tenant` 时只查该租户；省略则并发查询**所有客户端可见的租户**（即 `X-Allowed-Tenants` / `LOKI_CLIENT_TENANTS` 与 `LOKI_TENANTS` 的交集，详见下文「客户端租户范围」）。
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
@@ -89,7 +89,7 @@ uv run log-mcp-server
 |---|---|---|
 | `start` | ❌ | 可选时间范围起点，缩小查询面以避免大集群慢查询 |
 | `end` | ❌ | 可选时间范围终点 |
-| `tenant` | ❌ | 指定租户 ID，省略则查询所有租户 |
+| `tenant` | ❌ | 指定租户 ID，省略则查询**所有客户端可见的租户** |
 | `instance` | ❌ | 指定 Loki 实例（cluster id），多 Loki 时只查该实例 |
 
 ### 🔖 `get_label_values`
@@ -101,12 +101,77 @@ uv run log-mcp-server
 | `label` | ✅ | 标签名 |
 | `start` | ❌ | 可选时间范围起点 |
 | `end` | ❌ | 可选时间范围终点 |
-| `tenant` | ❌ | 指定租户 ID，省略则查询所有租户 |
+| `tenant` | ❌ | 指定租户 ID，省略则查询**所有客户端可见的租户** |
 | `instance` | ❌ | 指定 Loki 实例（cluster id），多 Loki 时只查该实例 |
 
 ### ❤️ `health_check`
 
-检查后端健康状态。多 Loki 时按 cluster 列出每个实例的状态（healthy / unhealthy）和 Loki 版本。无参数。
+检查后端健康状态。多 Loki 时按 cluster 列出每个实例的状态（healthy / unhealthy）和 Loki 版本。同时输出当前会话生效的 `Allowed Tenants` 与过滤来源（见下节）。无参数。
+
+## 客户端租户范围（必填）
+
+服务端 `LOKI_TENANTS` 决定整个进程**可访问**的租户全集，每个 MCP 客户端还**必须**显式声明一个子集 —— 否则三个日志查询工具（`query_logs` / `get_labels` / `get_label_values`）会**直接拒绝**，错误中明确告诉你怎么配。`health_check` 是诊断工具，不受此限制，仍可用来观察当前会话的 Allowed Tenants 与 Filter Source。
+
+> 这是**纵深防御**，不是鉴权 —— 能改 MCP 客户端配置的人也能改 header / env，请勿用作安全边界。它的目的是迫使每个客户端 / 用户**显式声明意图**，避免漫无目的的全租户扇出与误查。
+
+| 传输 | 客户端如何指定子集 |
+|---|---|
+| `streamable-http` / `sse` | 每次 HTTP 请求带 `X-Allowed-Tenants` 头部，**逗号分隔** |
+| `stdio` | MCP 客户端配置里 `env.LOKI_CLIENT_TENANTS`（逗号分隔） |
+
+优先级：`X-Allowed-Tenants` 头 > `LOKI_CLIENT_TENANTS` env。子集必须是 `LOKI_TENANTS` 的子集，否则启动报错（env 模式）或本次请求被拒（header 模式）。
+
+错误处理：
+- **未声明** → `RuntimeError: No tenant scope is configured for this MCP client. ...`（指引用户配置 header / env）
+- **越权 tenant=** → `RuntimeError: Forbidden tenant ...`
+- **子集与服务端交集为空** → `RuntimeError: No tenants are accessible. ...`
+
+> **建议：只配置当前业务实际需要的租户。** 调用 `query_logs` / `get_labels` / `get_label_values` 而不传 `tenant=` 时，服务端会**并行扇出**到所有"客户端可见"的租户。租户越多：
+> - **越慢** —— 扇出的并发数越大，整体响应时间被最慢的那个拖累；任何一个租户超时 / 503 都会拖慢整体。
+> - **越不精准** —— 多个租户标签命名空间常有重叠（例如都有 `app=foo` 但语义不同），结果会把不相关的日志也混进来，AI 容易看错。
+> - **越嘈杂** —— 部分失败的 `Errors` 区会变长，AI 必须解读，token 成本上升。
+>
+> 推荐的做法是按业务领域分组，每个 MCP 客户端只列**这次会话**实际需要的 1–3 个租户；不要一股脑把所有租户都填进 `X-Allowed-Tenants` / `LOKI_CLIENT_TENANTS`。
+
+#### Stdio 客户端（mcp.json）示例
+
+```json
+{
+  "mcpServers": {
+    "logs": {
+      "command": "log-mcp-server",
+      "args": ["stdio"],
+      "env": {
+        "LOKI_ADDR": "https://loki.example.com",
+        "LOKI_TENANTS": "team-a|team-b|team-c",
+        "LOKI_CLIENT_TENANTS": "team-a,team-b"
+      }
+    }
+  }
+}
+```
+
+#### HTTP 客户端（streamable-http）示例
+
+```json
+{
+  "mcpServers": {
+    "logs": {
+      "url": "http://log-mcp.example.com:8000/mcp",
+      "headers": { "X-Allowed-Tenants": "team-a,team-b" }
+    }
+  }
+}
+```
+
+`curl` 直连：
+
+```bash
+curl -X POST http://localhost:8000/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'X-Allowed-Tenants: team-a,team-b' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
 
 ## 多 Loki（Thanos 风格扇出）
 
@@ -308,6 +373,7 @@ kubectl -n log-mcp port-forward svc/log-mcp-server 8000:8000
 | **Loki 后端** | | |
 | `LOKI_ADDR` | Loki 服务器地址（`\|` 分隔多个） | `http://localhost:3100` |
 | `LOKI_TENANTS` | 租户列表（`\|` 分隔） | `fake` |
+| `LOKI_CLIENT_TENANTS` | 客户端租户子集（逗号分隔），仅 stdio；HTTP 模式用 `X-Allowed-Tenants` 头 | — |
 | `LOKI_USERNAME` | Basic 认证用户名 | — |
 | `LOKI_PASSWORD` | Basic 认证密码 | — |
 | `LOKI_BEARER_TOKEN` | Bearer token | — |

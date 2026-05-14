@@ -12,8 +12,9 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 import structlog
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
+from ..auth_context import parse_tenant_list
 from ..backends.base import LogBackend, LogEntry, TenantQueryResult
 from ..config import LogConfig
 from ..utils.errors import LogMCPError, ValidationError
@@ -49,21 +50,122 @@ def _require_state() -> tuple[LogBackend, LogConfig]:
 # ---------------------------------------------------------------------------
 # Multi-tenant fan-out helpers
 # ---------------------------------------------------------------------------
-def _resolve_tenants(backend: LogBackend, tenant: Optional[str]) -> List[str]:
+def _client_filter_for(
+    ctx: Optional[Context], config: LogConfig
+) -> tuple[Optional[List[str]], str]:
+    """Read the client-declared tenant subset for this tool call.
+
+    Returns ``(subset, source)``:
+
+    * In HTTP transports (streamable-http / SSE) the streamable_http
+      server passes the underlying Starlette ``Request`` to every tool
+      via ``ServerMessageMetadata.request_context``; we read the
+      ``X-Allowed-Tenants`` header from that.  This works across the
+      task boundary that an ASGI middleware + contextvar approach
+      cannot reach.
+    * In stdio there is no Starlette ``Request``; we fall back to the
+      ``LOKI_CLIENT_TENANTS`` env var (parsed in :class:`LogConfig`).
+
+    A ``None`` subset means "the client has not declared a scope" and
+    the log-query tools refuse to run.
+    """
+    request = None
+    if ctx is not None:
+        try:
+            request = ctx.request_context.request
+        except Exception:
+            request = None
+
+    if request is not None:
+        header: Optional[str] = None
+        try:
+            # RFC 7230 §3.2.2: multiple headers with the same name are
+            # equivalent to a single one with the values comma-joined.
+            # Starlette's ``.get()`` only returns the first occurrence,
+            # so use ``getlist`` and join ourselves to stay correct.
+            values = request.headers.getlist("x-allowed-tenants")
+            if values:
+                header = ",".join(values)
+        except Exception:
+            header = None
+        return parse_tenant_list(header), "header"
+
+    return config.get_client_tenant_list(), "env"
+
+
+def _effective_tenants(
+    backend: LogBackend, config: LogConfig, ctx: Optional[Context]
+) -> Optional[List[str]]:
+    """Return the tenant list visible to *this* request / process.
+
+    The client-declared subset (HTTP header for HTTP transports;
+    ``LOKI_CLIENT_TENANTS`` env for stdio) is intersected with
+    ``backend.tenants`` so a misconfigured client cannot widen the scope
+    beyond what the server permits.
+
+    Returns ``None`` when **no** client filter has been declared — log-
+    query tools must refuse in that case so the operator is forced to
+    state which tenants they intend to look at.  ``health_check`` is
+    intentionally exempt (it is a diagnostic, not a log query).
+    """
+    client, _source = _client_filter_for(ctx, config)
+    if client is None:
+        return None
+
+    server_set = set(backend.tenants)
+    return [t for t in client if t in server_set]
+
+
+def _client_filter_required_error(backend: LogBackend) -> RuntimeError:
+    return RuntimeError(
+        "No tenant scope is configured for this MCP client. Log-query "
+        "tools require an explicit tenant list before they can run. "
+        "HTTP transports (streamable-http / sse): send the "
+        "'X-Allowed-Tenants: <tenant-a>,<tenant-b>' request header. "
+        "Stdio transport: set 'LOKI_CLIENT_TENANTS=<tenant-a>,<tenant-b>' "
+        "in the env block of your MCP client config (e.g. mcp.json). "
+        f"Tenants configured on this server: {', '.join(backend.tenants)}."
+    )
+
+
+def _resolve_tenants(
+    backend: LogBackend,
+    config: LogConfig,
+    tenant: Optional[str],
+    ctx: Optional[Context],
+) -> List[str]:
     """Return the list of tenants to query.
 
-    When ``tenant`` is provided, validate it against configured tenants
-    and return a single-element list. Otherwise return all tenants.
+    Refuses (raises ``RuntimeError``) if the client has not declared a
+    tenant subset — see :func:`_effective_tenants`.  Otherwise validates
+    ``tenant`` (when provided) against the effective list and returns
+    either a single-element list or the full effective list.
     """
+    effective = _effective_tenants(backend, config, ctx)
+    if effective is None:
+        raise _client_filter_required_error(backend)
+    if not effective:
+        raise RuntimeError(
+            "No tenants are accessible. The client filter "
+            "(X-Allowed-Tenants header or LOKI_CLIENT_TENANTS env) "
+            "intersected with the server tenants produced an empty "
+            f"set. Server tenants: {', '.join(backend.tenants)}."
+        )
     if tenant is None:
-        return backend.tenants
+        return effective
     tenant = tenant.strip()
     if not tenant:
         raise RuntimeError("tenant cannot be empty")
-    if tenant not in backend.tenants:
+    if tenant not in effective:
+        if tenant in backend.tenants:
+            raise RuntimeError(
+                f"Forbidden tenant {tenant!r}: not in the client-allowed "
+                f"set {effective}. Server tenants: "
+                f"{', '.join(backend.tenants)}."
+            )
         raise RuntimeError(
             f"Unknown tenant {tenant!r}. "
-            f"Configured tenants: {', '.join(backend.tenants)}"
+            f"Allowed tenants: {', '.join(effective)}"
         )
     return [tenant]
 
@@ -153,13 +255,18 @@ def register_tools(mcp: FastMCP) -> None:
 
     # ----- health_check -------------------------------------------------
     @mcp.tool()
-    async def health_check() -> str:
+    async def health_check(ctx: Context) -> str:
         """Check log backend health and report current time.
 
         Returns a Markdown-formatted health report containing the
         aggregated backend status, per-cluster status (when multiple
-        clusters are configured), and the current time formatted in the
-        configured timezone (``LOG_TIMEZONE``).
+        clusters are configured), the current time formatted in the
+        configured timezone (``LOG_TIMEZONE``), and the active client
+        tenant filter for this session (Allowed Tenants / Filter Source).
+        Always call this *first* — if Filter Source shows ``(unset ...)``
+        the log-query tools will refuse and you must instruct the user
+        to add ``X-Allowed-Tenants`` (HTTP) or ``LOKI_CLIENT_TENANTS``
+        (stdio) to their MCP client config.
         """
         backend, config = _require_state()
         logger.info("Tool: health_check")
@@ -189,11 +296,44 @@ def register_tools(mcp: FastMCP) -> None:
                 )
             clusters_md = "\n".join(lines) + "\n"
 
+        client, source = _client_filter_for(ctx, config)
+        if client is None:
+            effective: Optional[List[str]] = None
+        else:
+            server_set = set(backend.tenants)
+            effective = [t for t in client if t in server_set]
+
+        if client is not None and source == "header":
+            filter_source = "request header X-Allowed-Tenants"
+        elif client is not None and source == "env":
+            filter_source = "env LOKI_CLIENT_TENANTS"
+        elif source == "header":
+            filter_source = (
+                "(unset — log-query tools are disabled until the MCP "
+                "client sends an 'X-Allowed-Tenants' request header)"
+            )
+        else:
+            filter_source = (
+                "(unset — log-query tools are disabled until "
+                "'LOKI_CLIENT_TENANTS' is set in the MCP client env "
+                "block, e.g. mcp.json)"
+            )
+
+        if effective is None:
+            allowed_display = "(unset — log-query tools disabled)"
+        elif not effective:
+            allowed_display = "(empty — intersection with server tenants is empty)"
+        else:
+            allowed_display = ", ".join(effective)
+
         report = (
             f"# Log Backend Health Check\n\n"
             f"**Backend:** `{info.get('backend', backend.name)}`\n"
             f"**Status:** {status_text}\n"
             f"**Configured Clusters:** {len(clusters)}\n"
+            f"**Server Tenants:** {', '.join(backend.tenants) or '-'}\n"
+            f"**Allowed Tenants (this session):** {allowed_display}\n"
+            f"**Filter Source:** {filter_source}\n"
             f"**Timezone:** {info.get('timezone', config.timezone)}\n"
             f"**Current Time:** {info.get('current_time', '-')}\n"
             f"{clusters_md}\n## Details\n"
@@ -205,6 +345,7 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     async def query_logs(
         query: str,
+        ctx: Context,
         start: Optional[str] = None,
         end: Optional[str] = None,
         limit: Optional[int] = None,
@@ -237,8 +378,12 @@ def register_tools(mcp: FastMCP) -> None:
             direction: ``"backward"`` (newest first, default) or
                 ``"forward"``.
             tenant: Tenant ID.  When specified only this tenant is
-                queried.  When omitted all configured tenants are queried
-                in parallel.
+                queried.  When omitted, **all client-allowed tenants**
+                are queried in parallel.  The client allowed-list **must
+                be configured** by the MCP client (``X-Allowed-Tenants``
+                header for HTTP transports, ``LOKI_CLIENT_TENANTS`` env
+                for stdio); without it this tool refuses to run.  Run
+                ``health_check`` to see the effective list.
             instance: Loki cluster id (e.g. ``host:port`` or hostname,
                 as shown by ``health_check``).  When specified, the query
                 runs against this single cluster only — bypassing fan-out
@@ -272,7 +417,7 @@ def register_tools(mcp: FastMCP) -> None:
                 )
         effective_limit = limit if limit is not None else config.default_limit
 
-        tenants = _resolve_tenants(backend, tenant)
+        tenants = _resolve_tenants(backend, config, tenant, ctx)
 
         logger.info(
             "Tool: query_logs",
@@ -343,6 +488,7 @@ def register_tools(mcp: FastMCP) -> None:
     # ----- get_labels ---------------------------------------------------
     @mcp.tool()
     async def get_labels(
+        ctx: Context,
         start: Optional[str] = None,
         end: Optional[str] = None,
         tenant: Optional[str] = None,
@@ -360,8 +506,12 @@ def register_tools(mcp: FastMCP) -> None:
                 window are returned.  Reduces response size on large
                 deployments.
             end: Optional time-range end (RFC3339).
-            tenant: Tenant ID to query. When omitted all configured
-                tenants are queried in parallel.
+            tenant: Tenant ID to query.  When omitted, all
+                **client-allowed** tenants are queried.  The client
+                allowed-list must be configured by the MCP client (see
+                ``query_logs`` docstring for details); without it this
+                tool refuses to run.
+
             instance: Loki cluster id to restrict to a single Loki when
                 multiple are configured.  Omit for default fan-out.
 
@@ -375,12 +525,14 @@ def register_tools(mcp: FastMCP) -> None:
             heading="Available Labels",
             tenant=tenant,
             instance=instance,
+            ctx=ctx,
         )
 
     # ----- get_label_values ---------------------------------------------
     @mcp.tool()
     async def get_label_values(
         label: str,
+        ctx: Context,
         start: Optional[str] = None,
         end: Optional[str] = None,
         tenant: Optional[str] = None,
@@ -396,8 +548,12 @@ def register_tools(mcp: FastMCP) -> None:
             label: Label name (required).
             start: Optional time-range start (RFC3339).
             end: Optional time-range end (RFC3339).
-            tenant: Tenant ID to query. When omitted all configured
-                tenants are queried in parallel.
+            tenant: Tenant ID to query.  When omitted, all
+                **client-allowed** tenants are queried.  The client
+                allowed-list must be configured by the MCP client (see
+                ``query_logs`` docstring for details); without it this
+                tool refuses to run.
+
             instance: Loki cluster id to restrict to a single Loki when
                 multiple are configured.  Omit for default fan-out.
 
@@ -413,6 +569,7 @@ def register_tools(mcp: FastMCP) -> None:
             heading=f"Values for Label `{label}`",
             tenant=tenant,
             instance=instance,
+            ctx=ctx,
         )
 
     logger.info("All tools registered", tool_count=4)
@@ -429,6 +586,7 @@ async def _list_keys(
     heading: str,
     tenant: Optional[str] = None,
     instance: Optional[str] = None,
+    ctx: Optional[Context] = None,
 ) -> str:
     backend, config = _require_state()
 
@@ -442,7 +600,7 @@ async def _list_keys(
         except ValidationError as e:
             raise RuntimeError(str(e)) from e
 
-    tenants = _resolve_tenants(backend, tenant)
+    tenants = _resolve_tenants(backend, config, tenant, ctx)
     logger.info(
         "Tool: list keys",
         kind="label_values" if label else "labels",

@@ -135,6 +135,34 @@ class TestValidation:
             LogConfig(key_file=str(key))
 
 
+class TestClientTenants:
+    def test_unset_means_no_filter(self):
+        cfg = LogConfig(tenants="t1|t2|t3")
+        assert cfg.get_client_tenant_list() is None
+
+    def test_subset_accepted(self):
+        cfg = LogConfig(tenants="t1|t2|t3", client_tenants="t1,t3")
+        assert cfg.get_client_tenant_list() == ["t1", "t3"]
+
+    def test_via_env(self, monkeypatch):
+        monkeypatch.setenv("LOKI_TENANTS", "alpha|beta|gamma")
+        monkeypatch.setenv("LOKI_CLIENT_TENANTS", "beta, gamma")
+        cfg = LogConfig()
+        assert cfg.get_client_tenant_list() == ["beta", "gamma"]
+
+    def test_non_subset_rejected(self):
+        with pytest.raises(ValueError, match="not a subset"):
+            LogConfig(tenants="t1|t2", client_tenants="t1,t9")
+
+    def test_blank_string_treated_as_unset(self):
+        cfg = LogConfig(tenants="t1|t2", client_tenants="   ,  , ")
+        assert cfg.get_client_tenant_list() is None
+
+    def test_whitespace_trimmed(self):
+        cfg = LogConfig(tenants="t1|t2", client_tenants="  t1  ,  t2  ")
+        assert cfg.get_client_tenant_list() == ["t1", "t2"]
+
+
 class TestBearerTokenFile:
     def test_loaded_from_file(self, tmp_path):
         f = tmp_path / "token.txt"

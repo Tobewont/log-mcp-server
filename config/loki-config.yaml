@@ -23,6 +23,20 @@ backend: "loki"             # Currently only "loki" is supported
 addr: "http://localhost:3100"
 tenants: "fake"             # Multi: "tenant-a|tenant-b|tenant-c"
 
+# ---- Client-side tenant scope (REQUIRED for log-query tools) -------------
+# Stdio transport: set this to the subset of `tenants` (comma-separated)
+# that the MCP client should actually see.  HTTP transports use the per-
+# request ``X-Allowed-Tenants`` header instead, which overrides this.
+# Without it set (header for HTTP, this/env for stdio) query_logs,
+# get_labels, get_label_values all refuse with a clear error.
+# health_check stays available regardless.
+# Defence-in-depth, NOT authentication.
+#
+# Performance: only list the tenants you actually need.  Tools called
+# without an explicit ``tenant=`` fan out in parallel to every entry here;
+# more tenants == slower, noisier and less precise results.
+# client_tenants: "team-a,team-b"
+
 # Authentication (pick at most one)
 # username: "your-username"
 # password: "your-password"
