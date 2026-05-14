@@ -66,7 +66,7 @@ Unhealthy clusters are **skipped automatically** (probed at startup and refreshe
 
 ### `query_logs`
 
-Query logs over a time range. When `tenant` is provided only that tenant is queried; otherwise all configured tenants are queried in parallel.
+Query logs over a time range. When `tenant` is provided only that tenant is queried; otherwise all **client-allowed** tenants are queried in parallel (the intersection of `X-Allowed-Tenants` / `LOKI_CLIENT_TENANTS` and the server-side `LOKI_TENANTS` — see "Client-side tenant scope" below).
 
 | Argument | Required | Description |
 |---|---|---|
@@ -88,7 +88,7 @@ List the set of label names (de-duplicated). When `tenant` is provided only that
 |---|---|---|
 | `start` | no | Optional time-range start. Narrows the search and reduces response size on large deployments |
 | `end` | no | Optional time-range end |
-| `tenant` | no | Tenant ID; omit to query all configured tenants |
+| `tenant` | no | Tenant ID; omit to query all **client-allowed** tenants |
 | `instance` | no | Loki cluster id; omit for default fan-out across healthy clusters |
 
 ### `get_label_values`
@@ -100,12 +100,78 @@ List all values of a given label (de-duplicated). When `tenant` is provided only
 | `label` | yes | Label name |
 | `start` | no | Optional time-range start |
 | `end` | no | Optional time-range end |
-| `tenant` | no | Tenant ID; omit to query all configured tenants |
+| `tenant` | no | Tenant ID; omit to query all **client-allowed** tenants |
 | `instance` | no | Loki cluster id; omit for default fan-out across healthy clusters |
 
 ### `health_check`
 
-Returns backend health. With multiple Lokis it shows per-cluster status (`healthy` / `unhealthy`) and the Loki version. No arguments.
+Returns backend health.  With multiple Lokis it shows per-cluster status (`healthy` / `unhealthy`) and the Loki version.  Also reports the **Allowed Tenants** for the current session and where the filter came from (see next section).  No arguments.
+
+## Client-side tenant scope (required)
+
+`LOKI_TENANTS` defines the **full set** of tenants this server process is authorised to query.  On top of that, every MCP client **must** declare which subset it actually wants to see — otherwise the three log-query tools (`query_logs` / `get_labels` / `get_label_values`) **refuse to run** and tell the operator how to configure the scope.  `health_check` is a diagnostic and stays available so operators can inspect the active scope and the filter source.
+
+> This is **defence in depth**, not authentication — anyone with write access to the MCP client config can change the header / env.  The point is to force every client to declare intent, eliminating accidental fan-outs across tenants the user does not actually care about.
+
+| Transport | How a client declares its subset |
+|---|---|
+| `streamable-http` / `sse` | `X-Allowed-Tenants` HTTP header on every request, **comma-separated** |
+| `stdio` | `env.LOKI_CLIENT_TENANTS` in the MCP client config (comma-separated) |
+
+Precedence: `X-Allowed-Tenants` header > `LOKI_CLIENT_TENANTS` env.  The subset must be a subset of `LOKI_TENANTS`; otherwise startup fails (env mode) or the request is rejected (header mode).
+
+Error model:
+
+- **Unset** → `RuntimeError: No tenant scope is configured for this MCP client. ...` (with explicit guidance on how to set it).
+- **Forbidden `tenant=`** → `RuntimeError: Forbidden tenant ...`
+- **Empty intersection with server tenants** → `RuntimeError: No tenants are accessible. ...`
+
+> **Keep the list small — list only the tenants you actually need.** When `query_logs` / `get_labels` / `get_label_values` are called without an explicit `tenant=`, the server fans out **in parallel to every client-allowed tenant**. The larger the list:
+> - **The slower** — overall latency is bound by the slowest tenant; one timeout / 503 drags everyone down.
+> - **The noisier and less precise** — different tenants reuse the same label names (e.g. `app=foo` everywhere) with different semantics, so the AI ends up mixing unrelated logs.
+> - **The more verbose** — the `Errors` section grows with every flaky tenant, costing tokens for the AI to interpret.
+>
+> Best practice: scope each MCP client to **the 1–3 tenants the current session actually needs**.  Don't dump every tenant into `X-Allowed-Tenants` / `LOKI_CLIENT_TENANTS`.
+
+#### Stdio client (`mcp.json`)
+
+```json
+{
+  "mcpServers": {
+    "logs": {
+      "command": "log-mcp-server",
+      "args": ["stdio"],
+      "env": {
+        "LOKI_ADDR": "https://loki.example.com",
+        "LOKI_TENANTS": "team-a|team-b|team-c",
+        "LOKI_CLIENT_TENANTS": "team-a,team-b"
+      }
+    }
+  }
+}
+```
+
+#### HTTP client (`streamable-http`)
+
+```json
+{
+  "mcpServers": {
+    "logs": {
+      "url": "http://log-mcp.example.com:8000/mcp",
+      "headers": { "X-Allowed-Tenants": "team-a,team-b" }
+    }
+  }
+}
+```
+
+`curl`:
+
+```bash
+curl -X POST http://localhost:8000/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'X-Allowed-Tenants: team-a,team-b' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
 
 ## Multi-Loki (Thanos-style fan-out)
 
@@ -290,6 +356,7 @@ Configuration sources (highest priority first):
 | **Loki** | | |
 | `LOKI_ADDR` | Loki URL(s) — `\|`-separated for multi-Loki | `http://localhost:3100` |
 | `LOKI_TENANTS` | Tenant list (`\|`-separated) | `fake` |
+| `LOKI_CLIENT_TENANTS` | Client-side tenant subset (comma-separated). Stdio only; HTTP transports use the `X-Allowed-Tenants` header instead | — |
 | `LOKI_USERNAME` | Basic auth username | — |
 | `LOKI_PASSWORD` | Basic auth password | — |
 | `LOKI_BEARER_TOKEN` | Bearer token | — |

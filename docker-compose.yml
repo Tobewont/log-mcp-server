@@ -34,6 +34,12 @@ services:
       - LOKI_CONNECT_TIMEOUT=${LOKI_CONNECT_TIMEOUT:-10.0}
       - LOKI_READ_TIMEOUT=${LOKI_READ_TIMEOUT:-15.0}
 
+      # Client-side tenant scope (REQUIRED for log-query tools).
+      # In HTTP mode (the default below) MCP clients send the
+      # X-Allowed-Tenants header per request and this env is unused.
+      # Only set this when running the container in stdio mode.
+      # - LOKI_CLIENT_TENANTS=${LOKI_CLIENT_TENANTS:-}
+
       # Generic
       - LOG_DEFAULT_LIMIT=${LOG_DEFAULT_LIMIT:-100}
       - LOG_MAX_LIMIT=${LOG_MAX_LIMIT:-5000}

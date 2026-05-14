@@ -19,6 +19,17 @@ data:
   LOKI_CONNECT_TIMEOUT: "10.0"
   LOKI_READ_TIMEOUT: "15.0"
 
+  # ---- Process-wide client tenant scope (stdio fallback) ---------------
+  # In HTTP mode (the default for k8s) every MCP client must send the
+  # X-Allowed-Tenants header; log-query tools refuse otherwise. This env
+  # is only meaningful when the container runs over stdio (e.g. mcp.json
+  # 'command' style) — it is left unset in HTTP deployments.
+  #
+  # Tip: list only the tenants you actually need.  Tools called without
+  # an explicit tenant= fan out in parallel to every entry here, so more
+  # tenants == slower, noisier and less precise results.
+  # LOKI_CLIENT_TENANTS: "team-a,team-b"
+
   # ---- Health cache (multi-cluster) -----------------------------------
   # Only used when LOKI_ADDR has multiple pipe-separated addresses.
   HEALTH_CHECK_INTERVAL: "300"

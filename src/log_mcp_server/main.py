@@ -68,7 +68,21 @@ def _build_server(config: LogConfig) -> FastMCP:
             "If the user explicitly names a Loki instance (e.g. "
             "'loki.example.com' or 'loki:3100'), pass it as the optional "
             "'instance' argument so the query is restricted to that single "
-            "cluster instead of fanning out."
+            "cluster instead of fanning out. "
+            "IMPORTANT: log-query tools (query_logs, get_labels, "
+            "get_label_values) require the MCP client to declare an "
+            "explicit tenant subset, either via the X-Allowed-Tenants "
+            "request header (HTTP) or the LOKI_CLIENT_TENANTS env var "
+            "(stdio). When this is unset the tools refuse to run with a "
+            "clear error — call health_check first to inspect the active "
+            "scope; if it shows '(unset)', tell the user to add a tenant "
+            "list to their MCP client config and stop. Never try a tenant "
+            "outside the allowed subset; it will be rejected as Forbidden. "
+            "Performance: prefer querying a single tenant via 'tenant=' "
+            "whenever possible; the more tenants in 'Allowed Tenants', "
+            "the slower and noisier the default fan-out becomes — if you "
+            "see 3+ tenants and notice unrelated results / errors, "
+            "advise the user to narrow their client config."
         ),
         debug=is_debug,
         log_level=config.log_level,

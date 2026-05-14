@@ -25,6 +25,7 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from .auth_context import parse_tenant_list
 from .utils.time_utils import get_timezone
 
 logger = structlog.get_logger(__name__)
@@ -185,6 +186,15 @@ class LogConfig(BaseSettings):
         validation_alias=AliasChoices(
             "health_check_timeout", "HEALTH_CHECK_TIMEOUT"
         ),
+    )
+
+    # ---- Per-process client tenant filter ---------------------------------
+    # Stdio fallback for the per-request HTTP header X-Allowed-Tenants.
+    # Comma-separated.  When set, the server can only see this subset of
+    # the configured tenants (must be a subset of LOKI_TENANTS).
+    client_tenants: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("client_tenants", "LOKI_CLIENT_TENANTS"),
     )
 
     # ---- Generic query / time settings ------------------------------------
@@ -348,6 +358,16 @@ class LogConfig(BaseSettings):
             raise ValueError(
                 "cert_file and key_file must be set together (or both unset)"
             )
+
+        client_subset = self.get_client_tenant_list()
+        if client_subset is not None:
+            server_set = set(self.get_tenant_list())
+            invalid = [t for t in client_subset if t not in server_set]
+            if invalid:
+                raise ValueError(
+                    f"client_tenants {invalid!r} are not a subset of "
+                    f"configured tenants {sorted(server_set)!r}"
+                )
         return self
 
     # ---- Helpers -----------------------------------------------------------
@@ -357,6 +377,14 @@ class LogConfig(BaseSettings):
             return ["fake"]
         items = [t.strip() for t in self.tenants.split("|") if t.strip()]
         return items or ["fake"]
+
+    def get_client_tenant_list(self) -> Optional[List[str]]:
+        """Parse the comma-separated client_tenants override.
+
+        Returns ``None`` when not set (meaning "no client-side filter").
+        Uses the same parser as the HTTP header path for consistency.
+        """
+        return parse_tenant_list(self.client_tenants)
 
     def get_loki_addrs(self) -> List[str]:
         """Return the list of configured Loki addresses (1 or more)."""

@@ -19,12 +19,13 @@ description: "通过 log-mcp-server（Loki 后端）查询应用/服务/Kubernet
 
 ## 核心原则
 
-1. **调用工具，不要模拟。** 如果 `log-mcp-server` 可达，直接调用工具。不要凭空编造日志行，不要转述工具输出。
-2. **先发现，再查询。** 多租户环境下，先用 `get_labels` / `get_label_values` 定位目标租户，然后只查该租户。全租户扇出既慢又嘈杂。
-3. **生产环境下每次 `query_logs` 只查一个租户。** 全租户扇出仅用于"我完全不知道数据在哪"的探索阶段。
-4. **LogQL 要精确。** 始终使用流选择器 `{...}`。尽早加上 `|= "keyword"` / `|~ "regex"` 过滤——返回少意味着快和便宜。
-5. **不要随意指定 `limit`。** 省略 `limit` 以使用服务端的 `LOG_DEFAULT_LIMIT`。只有用户明确要求"只看前 N 条"或"我要更多"时才传值。
-6. **暴露部分失败。** 如果返回中有 `Errors` 区（每租户或每集群的错误），必须告知用户——不能静默吞掉。
+1. **任何查询前先 `health_check`。** 检查 `Filter Source`：若是 `(unset ...)`，**立即停止**并指导用户配置 `X-Allowed-Tenants` / `LOKI_CLIENT_TENANTS`，不要尝试绕过；只有 `Allowed Tenants` 已设定后才继续。
+2. **调用工具，不要模拟。** 如果 `log-mcp-server` 可达，直接调用工具。不要凭空编造日志行，不要转述工具输出。
+3. **先发现，再查询。** 多租户环境下，先用 `get_labels` / `get_label_values` 定位目标租户，然后只查该租户。全租户扇出既慢又嘈杂。
+4. **生产环境下每次 `query_logs` 只查一个租户。** 全租户扇出仅用于"我完全不知道数据在哪"的探索阶段。
+5. **LogQL 要精确。** 始终使用流选择器 `{...}`。尽早加上 `|= "keyword"` / `|~ "regex"` 过滤——返回少意味着快和便宜。
+6. **不要随意指定 `limit`。** 省略 `limit` 以使用服务端的 `LOG_DEFAULT_LIMIT`。只有用户明确要求"只看前 N 条"或"我要更多"时才传值。
+7. **暴露部分失败。** 如果返回中有 `Errors` 区（每租户或每集群的错误），必须告知用户——不能静默吞掉。
 
 ## 工具速查
 
@@ -38,6 +39,42 @@ description: "通过 log-mcp-server（Loki 后端）查询应用/服务/Kubernet
 前三个工具的可选参数：`start`、`end`（RFC3339）、`tenant`、`instance`。`query_logs` 还支持 `limit` 和 `direction`（`backward` / `forward`）。
 
 > **`instance` 参数**：用户明确指定 Loki 实例时（例如"查 `loki.example.com` 上的日志"），传入对应的 cluster id（从 `health_check` 输出中获取）。指定后只查该实例，绕过多实例扇出。未指定时按原工作流并发查询所有健康实例。
+
+### 客户端必须声明租户范围（强制）
+
+三个日志查询工具（`query_logs` / `get_labels` / `get_label_values`）**要求 MCP 客户端先声明可见租户子集**。没声明就拒绝，错误会指引用户怎么配。`health_check` 不受影响，可以随时调用看现状。
+
+**第一步永远是 `health_check`**，看：
+
+- `Server Tenants` — 服务端配置的全集（你能选的最大范围）
+- `Allowed Tenants (this session)` — 当前会话实际生效的子集
+- `Filter Source` — `request header X-Allowed-Tenants` / `env LOKI_CLIENT_TENANTS` / `(unset — log-query tools are disabled until ...)`
+
+#### 当 `Filter Source` 是 `(unset ...)`
+
+**立即停止调用查询工具**。任何查询都会失败并报：
+
+```
+No tenant scope is configured for this MCP client. Log-query tools require an explicit tenant list before they can run. ...
+```
+
+按下面的方法引导用户更新自己的 MCP 客户端配置（不要尝试绕过）：
+
+- HTTP（streamable-http / sse）：在 `mcp.json` 的 `mcpServers.<name>.headers` 中加 `X-Allowed-Tenants: tenant-a,tenant-b`。
+- Stdio：在 `mcp.json` 的 `mcpServers.<name>.env` 中加 `LOKI_CLIENT_TENANTS=tenant-a,tenant-b`。
+- 用 `Server Tenants` 列出的值挑一个或多个填进去。
+
+#### 当 `Filter Source` 已设置
+
+按 `Allowed Tenants` 工作。**不要尝试** `tenant=<不在 Allowed Tenants 列表内的值>`，会被服务端直接拒绝（`Forbidden tenant ...`）。如果用户明确想查某个被限制掉的租户，让用户先更新自己的 `mcp.json`，不要绕过。
+
+#### 主动建议用户收窄租户范围
+
+如果发现 `Allowed Tenants` 列得很长（>3 个），并且实际查询时大量租户报 `Errors` / 数据混乱，应该**主动提醒用户**：
+
+> 你当前 `LOKI_CLIENT_TENANTS` / `X-Allowed-Tenants` 列了 N 个租户，但本次只用到 M 个；把无关的租户从配置里去掉会让查询更快、结果更精准、Errors 更少。
+
+调用查询工具时**优先 `tenant=<id>` 显式单租户**，再退到默认扇出。扇出仅在"完全不知道数据在哪"的探索阶段使用。
 
 ## 推荐工作流（多租户）
 
@@ -109,6 +146,19 @@ Streamable-HTTP 客户端配置示例：
 }
 ```
 
+如果想限制本客户端只能查指定租户子集：
+
+```json
+{
+  "mcpServers": {
+    "logs": {
+      "url": "http://localhost:8000/mcp",
+      "headers": { "X-Allowed-Tenants": "team-a,team-b" }
+    }
+  }
+}
+```
+
 Stdio 客户端配置示例：
 
 ```json
@@ -119,7 +169,8 @@ Stdio 客户端配置示例：
       "args": ["stdio"],
       "env": {
         "LOKI_ADDR": "https://loki.example.com",
-        "LOKI_TENANTS": "tenant-a|tenant-b"
+        "LOKI_TENANTS": "tenant-a|tenant-b",
+        "LOKI_CLIENT_TENANTS": "tenant-a"
       }
     }
   }
@@ -180,6 +231,8 @@ curl -s -H "Content-Type: application/json" \
 ```
 
 > 协议版本（`protocolVersion`）随 MCP 版本更新而变化。如果返回 `unsupported protocol`，检查 `mcp` 库版本并相应调整。
+
+> 如需把本次会话限制在特定租户子集，给上述每一次 `curl` 加上 `-H 'X-Allowed-Tenants: tenant-a,tenant-b'` 即可。
 
 SSE 传输（`/sse`）流程类似，但使用 `EventSource` 风格的流式响应。本地开发推荐直接用 Stdio 或上述高层方式。
 
