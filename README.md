@@ -128,7 +128,7 @@ uv run log-mcp-server
 | `stdio`（server 由 MCP 客户端在用户本机启动） | 服务器端的**绝对路径**（= 本机路径） | `cat` / `open` / 编辑器直接打开 |
 | `streamable-http` / `sse`（server 在远端，比如 K8s） | **下载 URL**：`https://logs-mcp.example.com/mcp/download/<token>` | 浏览器点开或 `curl -O <URL>` |
 
-下载路由挂在 `<MCP 路径前缀>/download/<token>`（streamable-http 默认 `/mcp/download/<token>`，sse 默认 `/sse/download/<token>`），与 MCP 自身的端点**同前缀**。这样反向代理 / Ingress 只要已经把 `/mcp` 转发到后端，下载链接就**自动可用**，无需新增任何转发规则。**仅靠不可猜测的 token 鉴权**（`secrets.token_urlsafe(32)`，约 256 bits 熵）。文件 TTL 默认 1 小时（`LOG_DOWNLOAD_TTL_SECONDS`）；链接成功下载一次后立即失效并删除文件，未下载则到期清理。
+下载路由挂在 `<MCP 路径前缀>/download/<token>`（streamable-http 默认 `/mcp/download/<token>`，sse 默认 `/sse/download/<token>`），与 MCP 自身的端点**同前缀**。这样反向代理 / Ingress 只要已经把 `/mcp` 转发到后端，下载链接就**自动可用**，无需新增任何转发规则。**仅靠不可猜测的 token 鉴权**（`secrets.token_urlsafe(32)`，约 256 bits 熵）。文件 TTL 默认 1 小时（`LOG_DOWNLOAD_TTL_SECONDS`）；链接成功下载一次后立即失效并删除文件，未下载则在过期后访问、下次注册或服务启动清理时删除。
 
 **配置项**：
 
