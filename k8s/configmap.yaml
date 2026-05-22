@@ -6,44 +6,58 @@ metadata:
   labels:
     app.kubernetes.io/name: log-mcp-server
 data:
-  # ---- Backend selection -----------------------------------------------
+  # ---- 后端选择 --------------------------------------------------------
   LOG_BACKEND: "loki"
 
-  # ---- Loki connection -------------------------------------------------
-  # Single Loki: "http://loki:3100"
-  # Multiple Loki (Thanos-style fan-out): use '|' as separator.
-  # The configured tenants are queried in parallel against every cluster.
+  # ---- Loki 连接 -------------------------------------------------------
+  # 单 Loki："http://loki:3100"
+  # 多 Loki（Thanos 风格扇出）：用 | 分隔多个地址。
+  # 配置的租户会在每个集群上并发查询。
   LOKI_ADDR: "http://loki.observability.svc.cluster.local:3100"
   LOKI_TENANTS: "fake"
   LOKI_TLS_SKIP_VERIFY: "false"
   LOKI_CONNECT_TIMEOUT: "10.0"
   LOKI_READ_TIMEOUT: "15.0"
 
-  # ---- Process-wide client tenant scope (stdio fallback) ---------------
-  # In HTTP mode (the default for k8s) every MCP client must send the
-  # X-Allowed-Tenants header; log-query tools refuse otherwise. This env
-  # is only meaningful when the container runs over stdio (e.g. mcp.json
-  # 'command' style) — it is left unset in HTTP deployments.
+  # ---- 进程级客户端租户范围（仅 stdio 模式 fallback） -------------------
+  # HTTP 模式（k8s 默认）下每次请求都必须携带 X-Allowed-Tenants 请求头，
+  # 否则查询/下载工具直接拒绝；本环境变量只在容器以 stdio 模式运行
+  # （例如 mcp.json 的 'command' 形式）时生效，HTTP 部署可以不设。
   #
-  # Tip: list only the tenants you actually need.  Tools called without
-  # an explicit tenant= fan out in parallel to every entry here, so more
-  # tenants == slower, noisier and less precise results.
+  # 提示：只列出实际需要的租户。未显式传 tenant= 时工具会并发查询
+  # 这里列出的所有租户，配的越多越慢、噪声越大、结果越不精准。
   # LOKI_CLIENT_TENANTS: "team-a,team-b"
 
-  # ---- Health cache (multi-cluster) -----------------------------------
-  # Only used when LOKI_ADDR has multiple pipe-separated addresses.
+  # ---- 健康检查缓存（仅多集群生效）------------------------------------
+  # 仅当 LOKI_ADDR 包含多个用 | 分隔的地址时使用。
   HEALTH_CHECK_INTERVAL: "300"
   HEALTH_CHECK_TIMEOUT: "5"
 
-  # ---- Generic query / time settings -----------------------------------
+  # ---- 通用查询 / 时间相关参数 ----------------------------------------
   LOG_DEFAULT_LIMIT: "100"
   LOG_MAX_LIMIT: "5000"
   LOG_DEFAULT_TIME_RANGE_MINUTES: "30"
   LOG_TIMEZONE: "Asia/Shanghai"
   LOG_LEVEL: "INFO"
 
-  # ---- MCP Transport ---------------------------------------------------
-  # streamable-http is the recommended MCP HTTP transport.
+  # ---- MCP 传输 -------------------------------------------------------
+  # 推荐使用 streamable-http。
   MCP_TRANSPORT: "streamable-http"
   MCP_HOST: "0.0.0.0"
   MCP_PORT: "8000"
+
+  # ---- 日志下载（download_logs 工具）---------------------------------
+  # 工具把可下载文件写到这个目录下，服务端通过
+  # <MCP 路径前缀>/download/<token> 路由对外提供。
+  #
+  # 路径要求（必须可写）：
+  # * deployment.yaml 设置了 readOnlyRootFilesystem=true，仅把 /tmp
+  #   挂载为 emptyDir。默认值放在 /tmp 内可开箱即用；如果需要独立
+  #   volume，请在 deployment.yaml 里挂载，并把此值改为对应路径。
+  LOG_DOWNLOAD_DIR: "/tmp/log-mcp-downloads"
+  # 下载令牌 / 文件存活时间（秒）。如果业务方常常隔很久才点链接，
+  # 可适当调大。
+  LOG_DOWNLOAD_TTL_SECONDS: "3600"
+  # 用于渲染下载链接的对外 base URL。在 Ingress / 反向代理改写 Host
+  # 时显式设置；否则服务端会按请求自身的 Host header 推断。
+  # LOG_DOWNLOAD_BASE_URL: "https://logs-mcp.example.com"

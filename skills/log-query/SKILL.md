@@ -5,7 +5,7 @@ description: "通过 log-mcp-server（Loki 后端）查询应用/服务/Kubernet
 
 # 日志查询 Skill
 
-使用 [`log-mcp-server`](../../README.md) 回答日志相关问题的工作流指南。服务器暴露 4 个工具（`query_logs`、`get_labels`、`get_label_values`、`health_check`），支持多 Loki 实例 + 多租户透明查询。
+使用 [`log-mcp-server`](../../README.md) 回答日志相关问题的工作流指南。服务器暴露 5 个工具（`query_logs`、`get_labels`、`get_label_values`、`health_check`、`download_logs`），支持多 Loki 实例 + 多租户透明查询。
 
 ## 何时使用
 
@@ -35,8 +35,9 @@ description: "通过 log-mcp-server（Loki 后端）查询应用/服务/Kubernet
 | `get_labels` | 列出各租户可用的标签名 | — |
 | `get_label_values` | 列出某标签在各租户的值 | `label` |
 | `health_check` | 查看后端/集群健康状态 | — |
+| `download_logs` | 把查询结果写到一个文件，让用户**离线下载到本地**（grep / jq / Excel / 入仓） | `query` |
 
-前三个工具的可选参数：`start`、`end`（RFC3339）、`tenant`、`instance`。`query_logs` 还支持 `limit` 和 `direction`（`backward` / `forward`）。
+`query_logs` / `get_labels` / `get_label_values` / `download_logs` 的可选参数：`start`、`end`（RFC3339）、`tenant`、`instance`。`query_logs` 与 `download_logs` 还支持 `limit` 与 `direction`（`backward` / `forward`）。
 
 > **`instance` 参数**：用户明确指定 Loki 实例时（例如"查 `loki.example.com` 上的日志"），传入对应的 cluster id（从 `health_check` 输出中获取）。指定后只查该实例，绕过多实例扇出。未指定时按原工作流并发查询所有健康实例。
 
@@ -125,6 +126,35 @@ query_logs(
 | JSON 字段过滤 | `{app="drama"} \| json \| level="error"` |
 
 > 指标表达式（`rate(...)`、`count_over_time(...)` 等）**不受支持**。只能使用日志流选择器。
+
+## 离线下载日志（`download_logs`）
+
+当用户需要"把日志拿到本地慢慢看"——例如 grep、jq、导入 Excel、入数据仓库——用 `download_logs` 而不是 `query_logs`。`query_logs` 输出会进 LLM 上下文，烧 token；`download_logs` 有命中时才把日志写成文件并**仅在响应里返回路径或 URL**。如果命中 `0` 条，不会生成空文件或链接，应直接告知用户本次查询没有匹配日志。
+
+参数与 `query_logs` 几乎一致，多一个 `fmt`（`jsonl` / `csv` / `txt`，默认 `jsonl`）。**强烈建议**显式指定 `start` / `end`，避免一次拉到 GB 级数据。
+
+返回行为按部署模式不同：
+
+- **stdio**（server 跑在用户本机）：返回服务端绝对路径，等价于"用户本机路径"。直接 `cat` / `open` 就行。
+- **streamable-http**（server 在远端，例如 K8s）：服务端额外暴露 `/mcp/download/<token>`（与 MCP 同前缀，反向代理只要转发 `/mcp` 就一并覆盖），有命中时工具返回完整下载 URL，**用户在自己机器上 `curl -O <URL>` 或浏览器点开即可**。链接默认 1 小时过期（`LOG_DOWNLOAD_TTL_SECONDS`），成功下载一次后立即失效。
+
+**建议姿势**（仍然先发现、再下载）：
+
+```
+1. health_check                                  -> 看 Allowed Tenants
+2. get_labels(tenant="<id>") / get_label_values  -> 定位目标
+3. download_logs(
+     tenant="<id>",
+     query='{app="drama"} |= "error"',
+     start="2026-05-21T08:00:00+08:00",
+     end="2026-05-21T08:30:00+08:00",
+     fmt="jsonl"
+   )                                              -> 有命中时拿到 URL/路径；0 条时不生成文件
+```
+
+**给用户的输出形式**：有命中时，把工具返回里的路径或 URL **原样**给用户，附上"格式 / 条数 / 大小 / 链接有效期"；命中 0 条时，说明查询成功但没有匹配日志。**不要**复述日志内容（它根本就不该进上下文）。
+
+> 下载的 `limit` 是**每租户**上限，受 `LOG_MAX_LIMIT` 限制；多租户下载的总条数可能超过单个 `limit`。要拉更多，缩小时间窗多次调用。看到响应里有"may have been truncated"就是某个租户触顶了，提示用户继续缩小时间窗。
 
 ## 接入方式——三种途径访问 MCP
 

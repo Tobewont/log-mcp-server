@@ -1,13 +1,11 @@
-"""Fan-out backend.
+"""扇出后端。
 
-Wraps multiple homogeneous ``LogBackend`` instances and presents them as
-one logical backend. Used when multiple Loki instances (or other clusters
-of the same backend type) need to be queried in parallel and aggregated.
+把多个同类 ``LogBackend`` 实例（例如多个 Loki 集群）封装为一个逻辑
+后端。当需要把同一查询并发下发到多个集群并聚合结果时使用。
 
-When a ``HealthCache`` is provided, only clusters marked as healthy are
-dispatched to for data queries (``query_logs``, ``get_labels``,
-``get_label_values``).  The ``health_check`` method always probes every
-cluster regardless.
+提供 ``HealthCache`` 后，数据类查询（``query_logs`` /
+``get_labels`` / ``get_label_values``）只会下发到被标记为健康的
+集群；``health_check`` 方法仍然探测全部集群。
 """
 from __future__ import annotations
 
@@ -29,10 +27,10 @@ _PER_CLUSTER_TIMEOUT = 30.0
 
 
 class FanoutBackend(LogBackend):
-    """Run the same query against several backends in parallel.
+    """把同一次查询并发下发到多个后端。
 
-    All sub-backends are expected to share the same ``tenants`` list and
-    backend ``name`` (e.g. several Loki instances of the same kind).
+    所有子后端期望共享相同的 ``tenants`` 列表和 ``name``（例如若干
+    个同类型的 Loki 实例）。
     """
 
     def __init__(

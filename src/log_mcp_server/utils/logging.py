@@ -1,7 +1,7 @@
-"""Logging configuration for the log MCP server.
+"""log-mcp-server 的日志配置。
 
-Initialised exactly once on first import. Subsequent calls are no-ops, so
-multiple modules calling ``setup_logging`` is safe.
+首次 import 时初始化一次，后续调用是 no-op，因此多个模块都调用
+``setup_logging`` 也是安全的。
 """
 from __future__ import annotations
 

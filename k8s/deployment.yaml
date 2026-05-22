@@ -51,9 +51,8 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
-          # The streamable-http endpoint is /mcp; a TCP probe is the
-          # simplest backend-agnostic liveness check that works for both
-          # SSE and streamable-http transports.
+          # streamable-http 的端点路径是 /mcp；这里用 TCP 探测做存活检查，
+          # 与具体后端无关，且对 sse / streamable-http 都通用。
           livenessProbe:
             tcpSocket:
               port: http

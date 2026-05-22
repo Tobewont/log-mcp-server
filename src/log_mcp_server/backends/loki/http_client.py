@@ -1,8 +1,7 @@
-"""Async HTTP client for Loki.
+"""Loki 的异步 HTTP client。
 
-The client is created **once** at backend startup and reused across
-concurrent tool invocations. Connection pooling and keep-alive are
-preserved.
+该 client 在后端启动时 **只创建一次**，并在并发的工具调用之间共享，
+保留连接池和 keep-alive，避免每次请求都重连。
 """
 from __future__ import annotations
 

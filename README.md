@@ -51,7 +51,7 @@ uv run log-mcp-server
 
 ## 可用工具
 
-> 设计原则：**非必要不增加**。下列 4 个工具足以覆盖 AI 助手的日志查询、标签发现和健康检查全部主流场景。
+> 设计原则：**非必要不增加**。下列 5 个工具足以覆盖 AI 助手的日志查询下载、标签发现和健康检查全部主流场景。
 
 ### 推荐工作流（多租户场景）
 
@@ -108,9 +108,47 @@ uv run log-mcp-server
 
 检查后端健康状态。多 Loki 时按 cluster 列出每个实例的状态（healthy / unhealthy）和 Loki 版本。同时输出当前会话生效的 `Allowed Tenants` 与过滤来源（见下节）。无参数。
 
+### 📥 `download_logs`
+
+把查询结果**离线写到一个文件**，让用户能直接下载到本地分析（grep / jq / Excel / 入库），而**不**走 LLM 上下文。若查询成功但命中 `0` 条日志，不会生成空文件或下载链接，只返回空结果提示。
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `query` | ✅ | LogQL，与 `query_logs` 一致 |
+| `start` / `end` | ❌ | 强烈建议明确指定，避免一次拉到 GB 级数据 |
+| `limit` | ❌ | **每个 tenant 上限**，默认 `LOG_MAX_LIMIT`；不得超过它 |
+| `direction` | ❌ | `backward` / `forward` |
+| `tenant` / `instance` | ❌ | 与 `query_logs` 同；同样要求客户端先声明 `X-Allowed-Tenants` / `LOKI_CLIENT_TENANTS` |
+| `fmt` | ❌ | `jsonl`（默认）/ `csv` / `txt` |
+
+**两种部署模式下的"下载到本地"是不同的实现路径**：
+
+| 部署 | 工具返回 | 用户怎么拿到文件 |
+|---|---|---|
+| `stdio`（server 由 MCP 客户端在用户本机启动） | 服务器端的**绝对路径**（= 本机路径） | `cat` / `open` / 编辑器直接打开 |
+| `streamable-http` / `sse`（server 在远端，比如 K8s） | **下载 URL**：`https://logs-mcp.example.com/mcp/download/<token>` | 浏览器点开或 `curl -O <URL>` |
+
+下载路由挂在 `<MCP 路径前缀>/download/<token>`（streamable-http 默认 `/mcp/download/<token>`，sse 默认 `/sse/download/<token>`），与 MCP 自身的端点**同前缀**。这样反向代理 / Ingress 只要已经把 `/mcp` 转发到后端，下载链接就**自动可用**，无需新增任何转发规则。**仅靠不可猜测的 token 鉴权**（`secrets.token_urlsafe(32)`，约 256 bits 熵）。文件 TTL 默认 1 小时（`LOG_DOWNLOAD_TTL_SECONDS`）；链接成功下载一次后立即失效并删除文件，未下载则到期清理。
+
+**配置项**：
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `LOG_DOWNLOAD_DIR` | `./logs/downloads` | 服务器端文件落地目录；stdio 模式下就是用户本机路径 |
+| `LOG_DOWNLOAD_TTL_SECONDS` | `3600` | HTTP 模式下 token + 文件存活秒数 |
+| `LOG_DOWNLOAD_BASE_URL` | _未设_ | 反代下用于渲染 URL 的 base，例如 `https://logs-mcp.example.com`。未设时从请求 Host header 推断 |
+
+**输出格式说明**：
+
+- `jsonl`：每行一个 JSON `{time, tenant, cluster, labels, line}`，最忠实于 Loki 数据，适合 `jq` / `grep` / 入仓
+- `csv`：列 `time, tenant, cluster, labels, line`（labels 是 JSON 字符串，逗号不会破列）
+- `txt`：人读 `[time] tenant/cluster {k=v, ...} line`
+
+> **注意**：下载的 `limit` 是**每个租户**的上限，受 `LOG_MAX_LIMIT` 限制（Loki 服务端 `max_entries_limit_per_query` 也要配套）。多租户下载的总条数可能超过单个 `limit`。要下载更多，请缩小时间窗多次调用。
+
 ## 客户端租户范围（必填）
 
-服务端 `LOKI_TENANTS` 决定整个进程**可访问**的租户全集，每个 MCP 客户端还**必须**显式声明一个子集 —— 否则三个日志查询工具（`query_logs` / `get_labels` / `get_label_values`）会**直接拒绝**，错误中明确告诉你怎么配。`health_check` 是诊断工具，不受此限制，仍可用来观察当前会话的 Allowed Tenants 与 Filter Source。
+服务端 `LOKI_TENANTS` 决定整个进程**可访问**的租户全集，每个 MCP 客户端还**必须**显式声明一个子集 —— 否则日志查询/下载工具（`query_logs` / `get_labels` / `get_label_values` / `download_logs`）会**直接拒绝**，错误中明确告诉你怎么配。`health_check` 是诊断工具，不受此限制，仍可用来观察当前会话的 Allowed Tenants 与 Filter Source。
 
 > 这是**纵深防御**，不是鉴权 —— 能改 MCP 客户端配置的人也能改 header / env，请勿用作安全边界。它的目的是迫使每个客户端 / 用户**显式声明意图**，避免漫无目的的全租户扇出与误查。
 
@@ -389,7 +427,7 @@ kubectl -n log-mcp port-forward svc/log-mcp-server 8000:8000
 | `HEALTH_CHECK_TIMEOUT` | 单 cluster 健康探测超时（秒） | `5.0` |
 | **通用查询设置** | | |
 | `LOG_DEFAULT_LIMIT` | 默认结果条数 | `100` |
-| `LOG_MAX_LIMIT` | 单次最大条数 | `5000` |
+| `LOG_MAX_LIMIT` | 单租户 `limit` 最大值 | `5000` |
 | `LOG_DEFAULT_TIME_RANGE_MINUTES` | 默认时间范围（分钟） | `30` |
 | `LOG_TIMEZONE` | 显示时区 | `Asia/Shanghai` |
 

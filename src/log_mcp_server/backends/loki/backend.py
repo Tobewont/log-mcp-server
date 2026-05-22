@@ -1,4 +1,4 @@
-"""Loki implementation of ``LogBackend``."""
+"""``LogBackend`` 的 Loki 实现。"""
 from __future__ import annotations
 
 from datetime import datetime
