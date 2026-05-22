@@ -1,9 +1,9 @@
-"""Error types for the log MCP server."""
+"""log-mcp-server 自定义异常类型。"""
 from typing import Any, Dict, Optional
 
 
 class LogMCPError(Exception):
-    """Base exception for all log MCP server errors."""
+    """log-mcp-server 所有自定义异常的基类。"""
 
     def __init__(
         self,
@@ -25,11 +25,11 @@ class LogMCPError(Exception):
 
 
 class BackendConnectionError(LogMCPError):
-    """Failed to connect to the log backend."""
+    """连接日志后端失败。"""
 
 
 class BackendHTTPError(LogMCPError):
-    """HTTP error from the log backend."""
+    """日志后端返回 HTTP 错误。"""
 
     def __init__(
         self,
@@ -49,16 +49,16 @@ class BackendHTTPError(LogMCPError):
 
 
 class BackendAuthError(LogMCPError):
-    """Authentication or authorization error against backend."""
+    """日志后端鉴权 / 授权失败。"""
 
 
 class BackendQueryError(LogMCPError):
-    """Backend query execution error."""
+    """日志后端执行查询失败。"""
 
 
 class ConfigError(LogMCPError):
-    """Configuration error."""
+    """配置错误。"""
 
 
 class ValidationError(LogMCPError):
-    """Input validation error from a tool/argument."""
+    """工具入参 / 参数校验错误。"""

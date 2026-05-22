@@ -1,10 +1,9 @@
-"""Periodic health cache for multi-cluster backends.
+"""为多集群后端提供的周期性健康检查缓存。
 
-Probes each cluster via ``backend.health_check()`` (which calls
-``/loki/api/v1/status/buildinfo``) on a configurable interval and caches
-the result.  ``FanoutBackend`` consults the cache before dispatching
-queries so that unhealthy clusters are skipped immediately, avoiding
-unnecessary timeouts.
+按可配置间隔通过 ``backend.health_check()``（即 Loki 的
+``/loki/api/v1/status/buildinfo``）探测每个集群，并把结果缓存下来。
+``FanoutBackend`` 在派发查询前会先查这个缓存，从而立即跳过不健康
+的集群，避免每次查询都被超时拖慢。
 """
 from __future__ import annotations
 

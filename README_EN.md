@@ -107,9 +107,47 @@ List all values of a given label (de-duplicated). When `tenant` is provided only
 
 Returns backend health.  With multiple Lokis it shows per-cluster status (`healthy` / `unhealthy`) and the Loki version.  Also reports the **Allowed Tenants** for the current session and where the filter came from (see next section).  No arguments.
 
+### `download_logs`
+
+Run a LogQL query and write the results to a file the **user can pull onto their own machine** for offline analysis (grep / jq / Excel / ingestion) — without paying for the contents in LLM tokens. If the query succeeds but matches `0` log entries, no empty file or download link is created; the tool returns an empty-result message instead.
+
+| Argument | Required | Description |
+|---|---|---|
+| `query` | yes | LogQL — same as `query_logs` |
+| `start` / `end` | no | Strongly recommended to set explicitly so you don't pull GBs by accident |
+| `limit` | no | Per-tenant cap; defaults to `LOG_MAX_LIMIT`, must not exceed it |
+| `direction` | no | `backward` / `forward` |
+| `tenant` / `instance` | no | Same semantics as `query_logs`; client must have declared `X-Allowed-Tenants` / `LOKI_CLIENT_TENANTS` |
+| `fmt` | no | `jsonl` (default) / `csv` / `txt` |
+
+**"Download to local" works differently per transport** — MCP itself has no API for the server to write a file on the client, so the implementation has to differ:
+
+| Transport | Tool returns | How the user retrieves the file |
+|---|---|---|
+| `stdio` (server is launched by the MCP client on the user's machine) | An **absolute path** on the local filesystem | `cat` / `open` / editor |
+| `streamable-http` / `sse` (server runs remote, e.g. on K8s) | A **download URL** like `https://logs-mcp.example.com/mcp/download/<token>` | Open in a browser or `curl -O <URL>` |
+
+The download route is mounted under `<MCP path prefix>/download/<token>` (default `/mcp/download/<token>` for streamable-http; `/sse/download/<token>` for sse), i.e. **under the same prefix as the MCP endpoint itself**.  Any reverse-proxy / Ingress rule that already forwards `/mcp` to this backend automatically covers downloads — **no extra forwarding rule needed**.  The token is the only credential — `secrets.token_urlsafe(32)` (~256 bits of entropy).  Files live for `LOG_DOWNLOAD_TTL_SECONDS` (1 hour by default); a successful download consumes the token and deletes the file immediately, while unused links are cleaned up on expiry.
+
+**Configuration**:
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `LOG_DOWNLOAD_DIR` | `./logs/downloads` | Where the server writes files; in stdio this **is** the user's machine |
+| `LOG_DOWNLOAD_TTL_SECONDS` | `3600` | TTL for tokens and files in HTTP mode |
+| `LOG_DOWNLOAD_BASE_URL` | _unset_ | Public URL base used to render the download link; falls back to the incoming request's Host header |
+
+**Output formats**:
+
+- `jsonl` — one JSON object per line `{time, tenant, cluster, labels, line}`; ideal for `jq` / `grep` / pipelines.
+- `csv` — `time, tenant, cluster, labels, line`; `labels` is a JSON string so commas inside don't break columns.
+- `txt` — human-readable, `[time] tenant/cluster {k=v, ...} line`.
+
+> The download `limit` is a **per-tenant** cap bounded by `LOG_MAX_LIMIT` (and Loki's own `max_entries_limit_per_query`).  A multi-tenant download may contain more total entries than a single `limit`.  To download more, narrow the time window and call again.
+
 ## Client-side tenant scope (required)
 
-`LOKI_TENANTS` defines the **full set** of tenants this server process is authorised to query.  On top of that, every MCP client **must** declare which subset it actually wants to see — otherwise the three log-query tools (`query_logs` / `get_labels` / `get_label_values`) **refuse to run** and tell the operator how to configure the scope.  `health_check` is a diagnostic and stays available so operators can inspect the active scope and the filter source.
+`LOKI_TENANTS` defines the **full set** of tenants this server process is authorised to query.  On top of that, every MCP client **must** declare which subset it actually wants to see — otherwise the log-query/download tools (`query_logs` / `get_labels` / `get_label_values` / `download_logs`) **refuse to run** and tell the operator how to configure the scope.  `health_check` is a diagnostic and stays available so operators can inspect the active scope and the filter source.
 
 > This is **defence in depth**, not authentication — anyone with write access to the MCP client config can change the header / env.  The point is to force every client to declare intent, eliminating accidental fan-outs across tenants the user does not actually care about.
 
@@ -372,7 +410,7 @@ Configuration sources (highest priority first):
 | `HEALTH_CHECK_TIMEOUT` | Per-cluster probe timeout (s) | `5.0` |
 | **Generic query** | | |
 | `LOG_DEFAULT_LIMIT` | Default entries per query | `100` |
-| `LOG_MAX_LIMIT` | Hard cap on `limit` | `5000` |
+| `LOG_MAX_LIMIT` | Hard cap on per-tenant `limit` | `5000` |
 | `LOG_DEFAULT_TIME_RANGE_MINUTES` | Default time-window in minutes | `30` |
 | `LOG_TIMEZONE` | Display timezone | `Asia/Shanghai` |
 

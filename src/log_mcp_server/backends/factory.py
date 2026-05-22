@@ -1,9 +1,8 @@
-"""Backend factory.
+"""后端工厂。
 
-Picks the appropriate concrete ``LogBackend`` for the given ``LogConfig``.
-For the Loki backend, ``LOKI_ADDR`` may contain multiple pipe-separated
-addresses, in which case we transparently wrap them in a
-``FanoutBackend`` with an associated ``HealthCache``.
+按 ``LogConfig`` 选择合适的具体 ``LogBackend`` 实现。Loki 后端下，
+``LOKI_ADDR`` 可以是用 ``|`` 分隔的多个地址，此时会被透明地封装为
+``FanoutBackend``，并配套一个 ``HealthCache``。
 """
 from __future__ import annotations
 
@@ -17,10 +16,10 @@ from .health_cache import HealthCache
 
 
 def create_backend(config: LogConfig) -> tuple[LogBackend, Optional[HealthCache]]:
-    """Create the active backend and an optional ``HealthCache``.
+    """构造启用的后端实例，以及可选的 ``HealthCache``。
 
-    Returns ``(backend, health_cache)``.  ``health_cache`` is ``None``
-    for single-cluster deployments (no fan-out needed).
+    返回值 ``(backend, health_cache)``。单集群部署不需要扇出，
+    ``health_cache`` 为 ``None``。
     """
     if config.backend == "loki":
         from .loki import LokiBackend

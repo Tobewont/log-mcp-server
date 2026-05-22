@@ -1,8 +1,7 @@
-"""Time / timezone helpers.
+"""时间与时区工具函数。
 
-Internally we always use timezone-aware UTC ``datetime`` objects to avoid
-naive/aware mixing. Conversion to the configured display timezone happens
-only when formatting for the user.
+服务内部统一使用带时区信息的 UTC ``datetime``，避免 naive 与 aware
+混用导致的 bug。仅在面向用户输出时才转换到配置的展示时区。
 """
 from __future__ import annotations
 

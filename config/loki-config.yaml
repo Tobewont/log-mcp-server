@@ -1,43 +1,41 @@
-# Sample configuration file for log-mcp-server.
-# Loaded automatically when present at:
-#   $LOG_CONFIG_PATH (or $LOKI_CONFIG_PATH)
+# log-mcp-server 配置文件示例。
+# 自动按以下顺序查找：
+#   $LOG_CONFIG_PATH（或 $LOKI_CONFIG_PATH）
 #   ./loki-config.yaml
 #   ./.loki-config.yaml
 #   ~/.loki-config.yaml
 #
-# Priority: env vars > .env file > this YAML file > built-in defaults.
-# Both `loki_*` / `log_*` prefixes and bare names are accepted.
+# 配置优先级：环境变量 > .env 文件 > 本 YAML 文件 > 内置默认值。
+# 字段名同时支持 `loki_*` / `log_*` 前缀和无前缀两种写法。
 
-# ---- MCP transport --------------------------------------------------------
+# ---- MCP 传输方式 --------------------------------------------------------
 mcp_transport: "stdio"       # "stdio" | "sse" | "streamable-http"
-# mcp_host / mcp_port are only used by the HTTP transports (sse,
-# streamable-http); they are ignored when mcp_transport == "stdio".
-mcp_host: "127.0.0.1"        # Use "0.0.0.0" for network exposure
+# mcp_host / mcp_port 仅在 HTTP 传输（sse / streamable-http）下生效，
+# stdio 模式下会被忽略。
+mcp_host: "127.0.0.1"        # 容器内/对外暴露时改为 "0.0.0.0"
 mcp_port: 8000
 log_level: "INFO"            # DEBUG / INFO / WARNING / ERROR
 
-# ---- Backend selection ----------------------------------------------------
-backend: "loki"             # Currently only "loki" is supported
+# ---- 后端选择 ------------------------------------------------------------
+backend: "loki"             # 目前仅支持 "loki"
 
-# ---- Loki backend ---------------------------------------------------------
+# ---- Loki 后端 -----------------------------------------------------------
 addr: "http://localhost:3100"
-tenants: "fake"             # Multi: "tenant-a|tenant-b|tenant-c"
+tenants: "fake"             # 多租户：用 | 分隔，例如 "tenant-a|tenant-b|tenant-c"
 
-# ---- Client-side tenant scope (REQUIRED for log-query tools) -------------
-# Stdio transport: set this to the subset of `tenants` (comma-separated)
-# that the MCP client should actually see.  HTTP transports use the per-
-# request ``X-Allowed-Tenants`` header instead, which overrides this.
-# Without it set (header for HTTP, this/env for stdio) query_logs,
-# get_labels, get_label_values all refuse with a clear error.
-# health_check stays available regardless.
-# Defence-in-depth, NOT authentication.
+# ---- 客户端租户范围（日志查询/下载工具必填）------------------------------
+# stdio 模式：在此处设置允许查询的租户子集（逗号分隔，必须是 `tenants`
+# 的子集）。HTTP 传输使用每次请求的 `X-Allowed-Tenants` 请求头，且
+# 该请求头优先于此配置。未声明任何范围时，query_logs / get_labels /
+# get_label_values / download_logs 都会直接拒绝并返回明确错误，
+# health_check 不受影响。
+# 这是纵深防御，不是身份认证。
 #
-# Performance: only list the tenants you actually need.  Tools called
-# without an explicit ``tenant=`` fan out in parallel to every entry here;
-# more tenants == slower, noisier and less precise results.
+# 性能提示：只列出实际需要的租户。未显式传 ``tenant=`` 时工具会并发
+# 查询这里列出的所有租户，配的越多查询越慢、噪声越大、结果越不精准。
 # client_tenants: "team-a,team-b"
 
-# Authentication (pick at most one)
+# 鉴权（最多选一种）
 # username: "your-username"
 # password: "your-password"
 # bearer_token: "your-bearer-token"
@@ -49,20 +47,31 @@ tenants: "fake"             # Multi: "tenant-a|tenant-b|tenant-c"
 # key_file: "/path/to/client.key"
 # tls_skip_verify: false
 
-# HTTP timeouts (seconds)
+# HTTP 超时（秒）
 connect_timeout: 10.0
 read_timeout: 15.0
 write_timeout: 10.0
 pool_timeout: 10.0
 
-# ---- Health cache (multi-cluster) ----------------------------------------
-# Only used when LOKI_ADDR contains multiple pipe-separated addresses.
-# Unhealthy clusters are automatically skipped for data queries.
-health_check_interval: 300   # background refresh interval (seconds)
-health_check_timeout: 5      # per-cluster probe timeout (seconds)
+# ---- 健康检查缓存（多集群时生效）-----------------------------------------
+# 仅当 LOKI_ADDR 包含多个用 | 分隔的地址时生效。
+# 不健康的集群在数据查询时会被自动跳过。
+health_check_interval: 300   # 后台刷新间隔（秒）
+health_check_timeout: 5      # 单集群健康探测超时（秒）
 
-# ---- Generic query / time settings ---------------------------------------
+# ---- 通用查询 / 时间相关参数 --------------------------------------------
 default_limit: 100
 max_limit: 5000
 default_time_range_minutes: 30
 timezone: "Asia/Shanghai"
+
+# ---- 日志下载（download_logs 工具）--------------------------------------
+# 服务端写入下载文件的目录。stdio 模式下这就是用户本机路径；
+# HTTP 模式下文件由服务端经 /<MCP前缀>/download/<token> 路由对外提供。
+download_dir: "./logs/downloads"
+# HTTP 模式下生成的文件（及下载令牌）的存活时间（秒）。
+download_ttl_seconds: 3600
+# 用于渲染下载链接的可选 base URL。在反向代理改写 Host 时显式设置；
+# 否则服务端按请求的 scheme + Host 自动推断（优先读 X-Forwarded-Proto
+# / X-Forwarded-Host）。
+# download_base_url: "https://logs-mcp.example.com"

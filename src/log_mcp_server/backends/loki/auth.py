@@ -1,7 +1,7 @@
-"""Authentication header construction for Loki.
+"""Loki 鉴权请求头的构造。
 
-Single source of truth for auth headers and tenant scoping. Both the
-shared HTTP client and any one-off requests should use ``build_headers``.
+鉴权请求头与租户隔离的单一权威来源。共享 HTTP client 和任何一次性
+请求都应当走 ``build_headers``。
 """
 from __future__ import annotations
 

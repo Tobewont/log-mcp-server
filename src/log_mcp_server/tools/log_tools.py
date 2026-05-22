@@ -1,14 +1,15 @@
-"""Backend-agnostic FastMCP tools.
+"""与后端无关的 FastMCP 工具集。
 
-These tools delegate to the active ``LogBackend``. They are the only
-externally-visible MCP surface, so keeping them lean and consistent is
-important for AI ergonomics.
+这些工具把请求委托给当前启用的 ``LogBackend``。它们是 MCP 对外暴露
+的唯一接口，因此尽量保持精简和一致，对 AI 客户端使用更友好。
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 from datetime import datetime
+from datetime import timezone as _tz
 from typing import Dict, List, Optional
 
 import structlog
@@ -17,6 +18,12 @@ from mcp.server.fastmcp import Context, FastMCP
 from ..auth_context import parse_tenant_list
 from ..backends.base import LogBackend, LogEntry, TenantQueryResult
 from ..config import LogConfig
+from ..downloads import (
+    SUPPORTED_FORMATS,
+    DownloadRegistry,
+    write_download,
+)
+from ..downloads.writer import build_filename
 from ..utils.errors import LogMCPError, ValidationError
 from ..utils.time_utils import format_in_tz, resolve_time_range
 
@@ -27,17 +34,41 @@ _PER_TENANT_TIMEOUT_SECONDS = 60.0
 
 _backend: Optional[LogBackend] = None
 _config: Optional[LogConfig] = None
+_download_registry: Optional[DownloadRegistry] = None
+_download_url_path: str = "/mcp/download"
 
 
-def initialize_tools(backend: LogBackend, config: LogConfig) -> None:
-    """Inject the active backend / config (called once at startup)."""
-    global _backend, _config
+def initialize_tools(
+    backend: LogBackend,
+    config: LogConfig,
+    download_registry: Optional[DownloadRegistry] = None,
+    download_url_path: str = "/mcp/download",
+) -> None:
+    """注入当前启用的后端 / 配置 / 注册表（启动时调用一次）。
+
+    Args:
+        backend: 当前启用的日志后端。
+        config: 生效的 :class:`LogConfig`。
+        download_registry: 仅对 HTTP 传输（streamable-http / sse）
+            有意义——此时注册表持有"令牌 → 文件"映射，供下载路由
+            消费。stdio 模式下应当传 ``None``（工具会直接返回
+            文件路径）。
+        download_url_path: 下载路由挂载的 URL 路径前缀，**不**包含
+            末尾的 token 段。必须与 ``main.py`` 中注册的路由保持一致。
+            默认为 ``/mcp/download``，与 MCP 主路径共享前缀，便于
+            任何已经覆盖 ``/mcp`` 的反向代理规则自动覆盖下载链接。
+    """
+    global _backend, _config, _download_registry, _download_url_path
     _backend = backend
     _config = config
+    _download_registry = download_registry
+    _download_url_path = download_url_path or "/mcp/download"
     logger.info(
         "Tools initialised",
         backend=backend.name,
         tenants=backend.tenants,
+        download_registry_enabled=download_registry is not None,
+        download_url_path=_download_url_path,
     )
 
 
@@ -47,27 +78,30 @@ def _require_state() -> tuple[LogBackend, LogConfig]:
     return _backend, _config
 
 
+def _get_download_registry() -> Optional[DownloadRegistry]:
+    return _download_registry
+
+
 # ---------------------------------------------------------------------------
-# Multi-tenant fan-out helpers
+# 多租户扇出相关辅助函数
 # ---------------------------------------------------------------------------
 def _client_filter_for(
     ctx: Optional[Context], config: LogConfig
 ) -> tuple[Optional[List[str]], str]:
-    """Read the client-declared tenant subset for this tool call.
+    """读取客户端为本次调用声明的租户子集。
 
-    Returns ``(subset, source)``:
+    返回 ``(subset, source)``：
 
-    * In HTTP transports (streamable-http / SSE) the streamable_http
-      server passes the underlying Starlette ``Request`` to every tool
-      via ``ServerMessageMetadata.request_context``; we read the
-      ``X-Allowed-Tenants`` header from that.  This works across the
-      task boundary that an ASGI middleware + contextvar approach
-      cannot reach.
-    * In stdio there is no Starlette ``Request``; we fall back to the
-      ``LOKI_CLIENT_TENANTS`` env var (parsed in :class:`LogConfig`).
+    * 在 HTTP 传输（streamable-http / SSE）下，streamable_http server
+      会通过 ``ServerMessageMetadata.request_context`` 把底层 Starlette
+      ``Request`` 透传给每次工具调用，我们直接从中读取
+      ``X-Allowed-Tenants`` 请求头。这条路径能穿过 ASGI middleware +
+      contextvar 跨不过去的任务边界。
+    * stdio 模式下没有 Starlette ``Request``，回退到
+      ``LOKI_CLIENT_TENANTS`` 环境变量（在 :class:`LogConfig` 内解析）。
 
-    A ``None`` subset means "the client has not declared a scope" and
-    the log-query tools refuse to run.
+    返回 ``None`` 表示"客户端未声明范围"，此时日志查询/下载工具会
+    直接拒绝执行。
     """
     request = None
     if ctx is not None:
@@ -79,10 +113,10 @@ def _client_filter_for(
     if request is not None:
         header: Optional[str] = None
         try:
-            # RFC 7230 §3.2.2: multiple headers with the same name are
-            # equivalent to a single one with the values comma-joined.
-            # Starlette's ``.get()`` only returns the first occurrence,
-            # so use ``getlist`` and join ourselves to stay correct.
+            # RFC 7230 §3.2.2：同名 header 出现多次时，等价于把它们的
+            # 值用逗号拼成一个 header。Starlette 的 ``.get()`` 只会
+            # 返回第一次出现的值，所以这里用 ``getlist`` 后自己拼接
+            # 以保持语义正确。
             values = request.headers.getlist("x-allowed-tenants")
             if values:
                 header = ",".join(values)
@@ -96,17 +130,16 @@ def _client_filter_for(
 def _effective_tenants(
     backend: LogBackend, config: LogConfig, ctx: Optional[Context]
 ) -> Optional[List[str]]:
-    """Return the tenant list visible to *this* request / process.
+    """返回 *本次请求 / 本进程* 实际可见的租户列表。
 
-    The client-declared subset (HTTP header for HTTP transports;
-    ``LOKI_CLIENT_TENANTS`` env for stdio) is intersected with
-    ``backend.tenants`` so a misconfigured client cannot widen the scope
-    beyond what the server permits.
+    客户端声明的子集（HTTP 模式下来自请求头，stdio 来自
+    ``LOKI_CLIENT_TENANTS`` 环境变量）会与 ``backend.tenants`` 取交集，
+    从而确保畸形或恶意的客户端配置无法把可见范围扩大到服务端允许
+    范围之外。
 
-    Returns ``None`` when **no** client filter has been declared — log-
-    query tools must refuse in that case so the operator is forced to
-    state which tenants they intend to look at.  ``health_check`` is
-    intentionally exempt (it is a diagnostic, not a log query).
+    若客户端 **未声明任何** 范围，返回 ``None``——此时日志查询/下载
+    工具必须拒绝执行，迫使用户先声明要查的租户。``health_check`` 不
+    走这条路径（它是诊断工具，不是日志查询）。
     """
     client, _source = _client_filter_for(ctx, config)
     if client is None:
@@ -134,12 +167,12 @@ def _resolve_tenants(
     tenant: Optional[str],
     ctx: Optional[Context],
 ) -> List[str]:
-    """Return the list of tenants to query.
+    """返回本次实际要查询的租户列表。
 
-    Refuses (raises ``RuntimeError``) if the client has not declared a
-    tenant subset — see :func:`_effective_tenants`.  Otherwise validates
-    ``tenant`` (when provided) against the effective list and returns
-    either a single-element list or the full effective list.
+    若客户端未声明租户子集，抛 ``RuntimeError``——参见
+    :func:`_effective_tenants`。否则在显式给出 ``tenant`` 时校验它必须
+    在生效集合内，并返回单元素列表；未给 ``tenant`` 时返回全部生效
+    租户。
     """
     effective = _effective_tenants(backend, config, ctx)
     if effective is None:
@@ -174,12 +207,11 @@ async def _fan_out(
     tenants: List[str],
     coro_factory,
 ) -> List[TenantQueryResult]:
-    """Run one coroutine per tenant in parallel with a per-tenant timeout.
+    """对每个租户并发执行一次协程，并对单租户设置超时。
 
-    ``coro_factory(tenant, cluster_errors)`` is invoked for each tenant
-    with a fresh ``cluster_errors`` dict, so multi-cluster fan-out
-    backends can record per-cluster failures without cross-tenant
-    contention.
+    ``coro_factory(tenant, cluster_errors)`` 在每个租户上都会被调一次，
+    且每次都会得到一份新的 ``cluster_errors`` 字典，这样多集群扇出
+    后端可以在不同租户之间互不干扰地记录"部分集群失败"信息。
     """
 
     async def _wrap(tenant: str) -> TenantQueryResult:
@@ -215,7 +247,7 @@ async def _fan_out(
 
 
 # ---------------------------------------------------------------------------
-# Formatters
+# 输出格式化辅助函数
 # ---------------------------------------------------------------------------
 def _format_failures(results: List[TenantQueryResult]) -> str:
     failure_lines: List[str] = []
@@ -248,25 +280,23 @@ def _format_log_entries(entries: List[LogEntry], tz: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool registration
+# 工具注册
 # ---------------------------------------------------------------------------
 def register_tools(mcp: FastMCP) -> None:
-    """Register all tools on the given FastMCP instance."""
+    """把全部工具注册到给定的 FastMCP 实例上。"""
 
     # ----- health_check -------------------------------------------------
     @mcp.tool()
     async def health_check(ctx: Context) -> str:
-        """Check log backend health and report current time.
+        """检查日志后端健康状态。
 
-        Returns a Markdown-formatted health report containing the
-        aggregated backend status, per-cluster status (when multiple
-        clusters are configured), the current time formatted in the
-        configured timezone (``LOG_TIMEZONE``), and the active client
-        tenant filter for this session (Allowed Tenants / Filter Source).
-        Always call this *first* — if Filter Source shows ``(unset ...)``
-        the log-query tools will refuse and you must instruct the user
-        to add ``X-Allowed-Tenants`` (HTTP) or ``LOKI_CLIENT_TENANTS``
-        (stdio) to their MCP client config.
+        返回后端聚合状态、各 Loki 实例状态、当前时间，以及本会话生效
+        的客户端租户范围（Allowed Tenants）和过滤来源。
+
+        建议作为查询前的第一步调用。如果 Filter Source 显示 unset，
+        说明客户端未声明可见租户，其它查询/下载工具都会拒绝执行；这时
+        应让用户在 MCP 客户端配置中添加 X-Allowed-Tenants（HTTP 模式）
+        或 LOKI_CLIENT_TENANTS（stdio 模式）。
         """
         backend, config = _require_state()
         logger.info("Tool: health_check")
@@ -353,45 +383,29 @@ def register_tools(mcp: FastMCP) -> None:
         tenant: Optional[str] = None,
         instance: Optional[str] = None,
     ) -> str:
-        """Query logs from the specified tenant (or all tenants if omitted).
+        """按 LogQL 查询指定租户（或全部可见的租户）的日志。
 
-        Unhealthy clusters are automatically skipped (health is cached).
+        推荐工作流（多租户场景）：
+        1. get_labels()：发现各租户下有哪些标签名。
+        2. get_label_values(label="<标签>")：查看各租户下该标签的值，
+           定位目标值归属的租户。
+        3. query_logs(tenant="<id>", query='{<label>="<value>"}')：
+           查询指定租户的日志。
 
-        **Recommended workflow (multi-tenant):**
-        1. ``get_labels()`` — discover available label names per tenant.
-        2. ``get_label_values(label="<relevant_label>")`` — find which
-           tenant owns the target value.
-        3. ``query_logs(tenant="<id>", query='{<label>="<value>"}')``
-           — query only that tenant for fast, precise results.
+        参数：
+          query     必填。LogQL 日志选择器，如 {job="nginx"} |= "error"。
+                    不支持指标表达式（rate、count_over_time 等）。
+          start     起始时间（RFC3339 / ISO 8601）。省略时默认为30分钟前。
+          end       结束时间（RFC3339 / ISO 8601）。省略时默认为当前时间。
+          limit     每个租户的返回条数上限。省略时使用默认值 5000；
+                    除非用户明确要求"只看前 N 条"或"我要更多"，否则不要显式传值。
+          direction backward（默认，最新在前）或 forward（最早在前）。
+          tenant    指定租户 ID。省略时查询所有可见租户。
+          instance  指定 Loki 实例 ID（可从 health_check 输出查到）。
+                    省略时按所有健康实例并发查询。
 
-        Args:
-            query: LogQL log selector, e.g. ``{job="nginx"} |= "error"``.
-                Metric expressions (rate, count_over_time, ...) are not
-                supported.
-            start: Inclusive start (RFC3339 / ISO 8601).  Defaults to
-                ``end - LOG_DEFAULT_TIME_RANGE_MINUTES``.
-            end: Exclusive end (RFC3339 / ISO 8601).  Defaults to now.
-            limit: Max entries **per tenant**.  Omit to use the server-side
-                default (LOG_DEFAULT_LIMIT). Do NOT specify a value unless the
-                user explicitly requests a specific number.  Must not exceed
-                ``LOG_MAX_LIMIT``.
-            direction: ``"backward"`` (newest first, default) or
-                ``"forward"``.
-            tenant: Tenant ID.  When specified only this tenant is
-                queried.  When omitted, **all client-allowed tenants**
-                are queried in parallel.  The client allowed-list **must
-                be configured** by the MCP client (``X-Allowed-Tenants``
-                header for HTTP transports, ``LOKI_CLIENT_TENANTS`` env
-                for stdio); without it this tool refuses to run.  Run
-                ``health_check`` to see the effective list.
-            instance: Loki cluster id (e.g. ``host:port`` or hostname,
-                as shown by ``health_check``).  When specified, the query
-                runs against this single cluster only — bypassing fan-out
-                even in multi-Loki deployments.  Use this when the user
-                explicitly tells you which Loki to query.
-
-        Returns:
-            Markdown report with entries, plus any errors at the bottom.
+        客户端必须先在 MCP 配置中声明可见租户（X-Allowed-Tenants 或
+        LOKI_CLIENT_TENANTS），否则本工具直接拒绝。
         """
         backend, config = _require_state()
 
@@ -494,29 +508,17 @@ def register_tools(mcp: FastMCP) -> None:
         tenant: Optional[str] = None,
         instance: Optional[str] = None,
     ) -> str:
-        """List label names from the specified tenant (or all tenants).
+        """列出某租户（或全部可见租户）下的标签名。
 
-        Unhealthy clusters are automatically skipped.
-        Use this as the first step to discover which tenants have the
-        labels you need before calling ``query_logs``.
+        通常作为日志查询的第一步使用：先看有哪些标签可用，再用
+        get_label_values 定位目标值归属的租户。
 
-        Args:
-            start: Optional time-range start (RFC3339).  When provided
-                together with ``end``, only labels appearing within that
-                window are returned.  Reduces response size on large
-                deployments.
-            end: Optional time-range end (RFC3339).
-            tenant: Tenant ID to query.  When omitted, all
-                **client-allowed** tenants are queried.  The client
-                allowed-list must be configured by the MCP client (see
-                ``query_logs`` docstring for details); without it this
-                tool refuses to run.
-
-            instance: Loki cluster id to restrict to a single Loki when
-                multiple are configured.  Omit for default fan-out.
-
-        Returns:
-            Markdown report grouped by tenant.
+        参数：
+          start    可选时间范围起点（RFC3339）。与 end 同时给出时，
+                   只返回该时间窗内出现过的标签。省略时默认为30分钟前。
+          end      可选时间范围终点（RFC3339），省略时默认为当前时间。
+          tenant   指定租户 ID。省略时查询全部可见的租户。
+          instance 指定 Loki 实例 ID。省略时按所有健康实例并发查询。
         """
         return await _list_keys(
             label=None,
@@ -538,27 +540,17 @@ def register_tools(mcp: FastMCP) -> None:
         tenant: Optional[str] = None,
         instance: Optional[str] = None,
     ) -> str:
-        """List values of a specific label from the specified tenant (or all).
+        """列出某个标签的所有取值。
 
-        Unhealthy clusters are automatically skipped.
-        Use this to confirm which tenant owns specific label values
-        before calling ``query_logs``.
+        用于在 query_logs 之前确认目标值归属于哪个租户。
 
-        Args:
-            label: Label name (required).
-            start: Optional time-range start (RFC3339).
-            end: Optional time-range end (RFC3339).
-            tenant: Tenant ID to query.  When omitted, all
-                **client-allowed** tenants are queried.  The client
-                allowed-list must be configured by the MCP client (see
-                ``query_logs`` docstring for details); without it this
-                tool refuses to run.
-
-            instance: Loki cluster id to restrict to a single Loki when
-                multiple are configured.  Omit for default fan-out.
-
-        Returns:
-            Markdown report grouped by tenant.
+        参数：
+          label    必填。标签名。
+          start    可选时间范围起点（RFC3339）。与 end 同时给出时，
+                   只返回该时间窗内出现过的标签。省略时默认为30分钟前。
+          end      可选时间范围终点（RFC3339），省略时默认为当前时间。
+          tenant   指定租户 ID。省略时查询全部可见的租户。
+          instance 指定 Loki 实例 ID。省略时按所有健康实例并发查询。
         """
         if not label or not label.strip():
             raise RuntimeError("Label name cannot be empty")
@@ -572,11 +564,300 @@ def register_tools(mcp: FastMCP) -> None:
             ctx=ctx,
         )
 
-    logger.info("All tools registered", tool_count=4)
+    # ----- download_logs ------------------------------------------------
+    @mcp.tool()
+    async def download_logs(
+        query: str,
+        ctx: Context,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        limit: Optional[int] = None,
+        direction: str = "backward",
+        tenant: Optional[str] = None,
+        instance: Optional[str] = None,
+        fmt: str = "jsonl",
+    ) -> str:
+        """按 LogQL 查询日志并写到文件，让用户离线下载到本地分析。
+
+        适用场景：用户希望把日志拉到本地用 grep / jq / Excel 等方式
+        处理，不需要 AI 在对话里复述日志内容。
+
+        参数：
+          query     必填。LogQL 日志选择器，与 query_logs 一致。
+          start     起始时间（RFC3339 / ISO 8601）。强烈建议显式给出，
+                    避免一次拉过多数据。
+          end       结束时间（RFC3339 / ISO 8601）。
+          limit     每个租户的返回条数上限。默认 5000。
+          direction backward（默认，最新在前）或 forward（最早在前）。
+          tenant    指定租户 ID。省略时查询所有客户端可见的租户。
+          instance  指定 Loki 实例 ID。
+          fmt       输出格式，可选 jsonl（默认）/ csv / txt。
+
+        返回：
+          命中 0 条时不生成文件，只返回空结果提示。
+          HTTP 模式（streamable-http / sse）：有日志时返回完整下载
+          URL，用户在本机用浏览器或 curl -O 拉取；链接默认 1 小时
+          过期，成功下载后立即失效。
+          stdio 模式：有日志时返回服务端绝对路径（即用户本机路径），
+          直接打开即可。
+        """
+        backend, config = _require_state()
+        registry = _get_download_registry()
+
+        if fmt not in SUPPORTED_FORMATS:
+            raise RuntimeError(
+                f"Unsupported fmt {fmt!r}. Choose one of: "
+                f"{', '.join(SUPPORTED_FORMATS)}."
+            )
+
+        try:
+            start_dt, end_dt = resolve_time_range(
+                start, end, config.default_time_range_minutes
+            )
+        except ValidationError as e:
+            raise RuntimeError(str(e)) from e
+
+        if direction not in ("forward", "backward"):
+            raise RuntimeError(
+                f"Invalid direction {direction!r}; must be 'forward' or 'backward'."
+            )
+
+        if limit is not None:
+            if not isinstance(limit, int) or limit <= 0:
+                raise RuntimeError("limit must be a positive integer")
+            if limit > config.max_limit:
+                raise RuntimeError(
+                    f"limit {limit} exceeds maximum {config.max_limit} "
+                    f"(LOG_MAX_LIMIT)"
+                )
+        # 下载默认 limit == max_limit，单次尽可能多拉；如果用户要更少
+        # 数据，再显式传 limit。
+        effective_limit = limit if limit is not None else config.max_limit
+
+        tenants = _resolve_tenants(backend, config, tenant, ctx)
+
+        logger.info(
+            "Tool: download_logs",
+            tenants=tenants,
+            query=query,
+            start=start_dt.isoformat(),
+            end=end_dt.isoformat(),
+            limit=effective_limit,
+            direction=direction,
+            fmt=fmt,
+        )
+
+        async def run_for_tenant(
+            t: str, cluster_errors: Dict[str, str]
+        ) -> List[LogEntry]:
+            return await backend.query_logs(
+                query=query,
+                tenant=t,
+                start=start_dt,
+                end=end_dt,
+                limit=effective_limit,
+                direction=direction,
+                instance=instance,
+                cluster_errors=cluster_errors,
+            )
+
+        results = await _fan_out(tenants, run_for_tenant)
+        all_entries: List[LogEntry] = []
+        for r in results:
+            if r.ok and r.data:
+                all_entries.extend(r.data)
+
+        successful = [r.tenant for r in results if r.ok]
+        failed_tenants = [r for r in results if not r.ok]
+        limit_reached = any(
+            r.ok and r.data is not None and len(r.data) >= effective_limit
+            for r in results
+        )
+
+        if not all_entries and failed_tenants and not successful:
+            return (
+                "# Download Failed\n\n"
+                "All tenant queries failed; nothing was written.\n"
+                + _format_failures(results)
+            )
+
+        if not all_entries:
+            return (
+                f"# Log Download Empty\n\n"
+                f"**Backend:** `{backend.name}`\n"
+                f"**Query:** `{query}`\n"
+                f"**Time Range:** "
+                f"`{format_in_tz(start_dt, config.timezone)}` to "
+                f"`{format_in_tz(end_dt, config.timezone)}`\n"
+                f"**Tenants Queried:** `{', '.join(tenants)}`\n"
+                f"**Successful Tenants:** `{', '.join(successful) or '-'}`\n"
+                f"**Instance:** `{instance or '*all healthy*'}`\n"
+                f"**Format:** `{fmt}`\n"
+                f"**Entries:** 0\n\n"
+                "Query succeeded, but no log entries matched. "
+                "No download file was created.\n"
+                f"{_format_failures(results)}"
+            )
+
+        # 文件名用 tenant 名；多租户时用 "all"。
+        tenant_label = tenant or (
+            tenants[0] if len(tenants) == 1 else "all"
+        )
+        try:
+            config.download_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise RuntimeError(
+                f"Cannot create LOG_DOWNLOAD_DIR "
+                f"{str(config.download_dir)!r}: {e}"
+            ) from e
+
+        now_utc = datetime.now(tz=_tz.utc)
+        # 两个文件名：
+        # * ``filename`` 是用户侧看到的名字（HTTP Content-Disposition）
+        # * ``on_disk_name`` 多加一段随机 hex，避免同一秒内的并发下载
+        #   在磁盘上互相覆盖；用户看不到这一段，因为 registry 用前者作
+        #   为下载文件名。
+        filename = build_filename(
+            tenant_label=tenant_label, fmt=fmt, now=now_utc
+        )
+        on_disk_name = build_filename(
+            tenant_label=tenant_label,
+            fmt=fmt,
+            now=now_utc,
+            suffix=secrets.token_hex(4),
+        )
+        target_path = (config.download_dir / on_disk_name).resolve()
+
+        # 纵深防御：目标路径必须在 download_dir 之内（防 symlink 逃逸）。
+        download_root = config.download_dir.resolve()
+        try:
+            target_path.relative_to(download_root)
+        except ValueError as e:  # pragma: no cover — symlink 异常时才触发
+            raise RuntimeError(
+                f"Refusing to write outside LOG_DOWNLOAD_DIR: {target_path}"
+            ) from e
+
+        result = write_download(
+            all_entries,
+            target_path=target_path,
+            fmt=fmt,
+            timezone=config.timezone,
+        )
+
+        # 拼用户侧可见的"取件方式"：HTTP 模式用 URL，stdio 用绝对路径。
+        delivery: str
+        if registry is not None:
+            entry = await registry.register(
+                path=result.path,
+                fmt=fmt,
+                download_filename=filename,
+            )
+            url = _make_download_url(ctx, config, entry.token)
+            if url is None:
+                # 走到这里说明 HTTP 模式但无法推断 base URL，正常配置下
+                # 几乎不会发生。退化方案：把 token 显式给出来，便于
+                # 运维侧排查。
+                delivery = (
+                    f"**Token:** `{entry.token}` — set "
+                    "`LOG_DOWNLOAD_BASE_URL` so the server can render "
+                    "a complete URL."
+                )
+            else:
+                delivery = (
+                    f"**Download URL:** {url}\n"
+                    f"_Link expires in {registry.ttl_seconds // 60} "
+                    "minutes._"
+                )
+        else:
+            delivery = f"**Path:** `{str(result.path)}`"
+
+        size_kb = result.byte_size / 1024
+        truncated_note = ""
+        if limit_reached:
+            truncated_note = (
+                "\n> ⚠️ Result reached the per-tenant limit "
+                f"({effective_limit}); some entries may have been "
+                "truncated. Narrow the time range and download again "
+                "to capture everything.\n"
+            )
+
+        report = (
+            f"# Log Download Ready\n\n"
+            f"**Backend:** `{backend.name}`\n"
+            f"**Query:** `{query}`\n"
+            f"**Time Range:** "
+            f"`{format_in_tz(start_dt, config.timezone)}` to "
+            f"`{format_in_tz(end_dt, config.timezone)}`\n"
+            f"**Tenants Queried:** `{', '.join(tenants)}`\n"
+            f"**Successful Tenants:** `{', '.join(successful) or '-'}`\n"
+            f"**Instance:** `{instance or '*all healthy*'}`\n"
+            f"**Format:** `{fmt}`\n"
+            f"**Entries:** {result.entry_count}\n"
+            f"**Size:** {size_kb:.1f} KB\n"
+            f"{delivery}\n"
+            f"{truncated_note}"
+            f"{_format_failures(results)}"
+        )
+        return report
+
+    logger.info("All tools registered", tool_count=5)
+
+
+def _make_download_url(
+    ctx: Optional[Context], config: LogConfig, token: str
+) -> Optional[str]:
+    """渲染下载路由的绝对 URL。
+
+    下载路由挂在 **与 MCP 主端点相同的路径前缀** 下（默认
+    ``/mcp/download/<token>``），任何把 ``/mcp`` 转发到本服务的反向
+    代理规则都会自动覆盖下载链接。
+
+    选择 base URL 的优先级：
+
+    1. 配置项 ``LOG_DOWNLOAD_BASE_URL``（推荐在反向代理改写 Host 的
+       场景下显式配置）；下载路径会自动拼接到末尾。
+    2. 当前请求的 scheme + Host 请求头（仅 HTTP 传输有该信息）。
+    3. ``None``——交由调用方退化为直接展示 token / 路径。
+    """
+    path = _download_url_path.rstrip("/")
+    if config.download_base_url:
+        return f"{config.download_base_url}{path}/{token}"
+
+    request = None
+    if ctx is not None:
+        try:
+            request = ctx.request_context.request
+        except Exception:
+            request = None
+    if request is None:
+        return None
+
+    try:
+        # 优先读 X-Forwarded-Proto / X-Forwarded-Host：在 TLS 终止
+        # 反向代理后面，这样生成的链接才会是 ``https://...`` 而不是
+        # ``http://...``（混合内容 / 重定向问题的高发场景）。这两个
+        # 请求头不存在时，退化到直接读请求自身的 scheme + Host。
+        fwd_proto = request.headers.get("x-forwarded-proto")
+        scheme = (
+            fwd_proto.split(",")[0].strip()
+            if fwd_proto
+            else request.url.scheme  # type: ignore[attr-defined]
+        )
+        fwd_host = request.headers.get("x-forwarded-host")
+        host = (
+            fwd_host.split(",")[0].strip()
+            if fwd_host
+            else request.headers.get("host")
+        )
+    except Exception:
+        return None
+    if not host:
+        return None
+    return f"{scheme}://{host}{path}/{token}"
 
 
 # ---------------------------------------------------------------------------
-# Shared list helper used by ``get_labels`` and ``get_label_values``
+# get_labels / get_label_values 共用的列表辅助函数
 # ---------------------------------------------------------------------------
 async def _list_keys(
     *,
@@ -636,7 +917,7 @@ async def _list_keys(
     parts = [
         f"# {heading}\n",
         f"**Backend:** `{backend.name}`",
-        f"**Configured Tenants:** `{', '.join(tenants)}`",
+        f"**Tenants Queried:** `{', '.join(tenants)}`",
         f"**Successful Tenants:** `{', '.join(successful) or '-'}`",
         f"**Instance:** `{instance or '*all healthy*'}`",
     ]

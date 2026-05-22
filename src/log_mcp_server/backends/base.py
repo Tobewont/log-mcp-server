@@ -1,8 +1,7 @@
-"""Abstract log backend interface.
+"""日志后端的抽象接口。
 
-All concrete backends (Loki, Elasticsearch, ...) must implement this
-interface. The MCP tools layer talks only to ``LogBackend`` and is
-backend-agnostic.
+所有具体的后端（Loki、Elasticsearch 等）都必须实现这个接口。MCP
+工具层只与 ``LogBackend`` 交互，对具体后端无感知。
 """
 from __future__ import annotations
 
@@ -14,14 +13,13 @@ from typing import Any, Dict, Generic, List, Optional, TypeVar
 
 @dataclass
 class LogEntry:
-    """Unified log entry across all backends.
+    """跨后端的统一日志条目模型。
 
-    ``cluster`` is set when the entry came from a multi-cluster fan-out
-    backend (e.g. multiple Loki instances).  ``None`` for single-cluster
-    deployments.
+    ``cluster`` 字段仅在数据来自多集群扇出后端（例如多个 Loki 实例）
+    时设置；单集群部署下保持为 ``None``。
     """
 
-    timestamp: datetime  # UTC, tz-aware
+    timestamp: datetime  # UTC，带时区
     labels: Dict[str, str]
     line: str
     tenant: Optional[str] = None
@@ -33,12 +31,11 @@ T = TypeVar("T")
 
 @dataclass
 class TenantQueryResult(Generic[T]):
-    """Result of a per-tenant operation that may individually fail.
+    """单租户操作的结果（每个租户可能各自失败）。
 
-    Used by multi-tenant fan-out so the caller can distinguish "no data"
-    from "tenant errored".  ``cluster_errors`` carries per-cluster
-    failures from a fan-out backend (e.g. one of several Loki instances
-    failed but others succeeded).
+    在多租户扇出场景下使用，让调用方能够区分"没有数据"和"该租户出错了"。
+    ``cluster_errors`` 用于携带扇出后端中的"部分集群失败"信息——例如
+    多 Loki 中某个实例挂了但其他还成功了。
     """
 
     tenant: str
@@ -56,16 +53,15 @@ class TenantQueryResult(Generic[T]):
 
 
 class LogBackend(ABC):
-    """Abstract log backend.
+    """日志后端的抽象基类。
 
-    Concrete backends MUST be safe to share across concurrent requests
-    after ``__aenter__``/``setup`` has been called once. Implementations
-    typically wrap a single long-lived ``httpx.AsyncClient``.
+    具体后端在 ``__aenter__`` / ``setup`` 调用一次之后，必须能在并发
+    请求间安全共享。实现通常会包一个长生命周期的
+    ``httpx.AsyncClient``。
 
-    Multi-cluster fan-out implementations (e.g. ``FanoutBackend``) report
-    per-cluster partial failures by populating the optional
-    ``cluster_errors`` dict argument that the caller may pass in.
-    Single-cluster backends ignore the argument.
+    多集群扇出实现（例如 ``FanoutBackend``）通过填充调用方传入的
+    可选 ``cluster_errors`` 字典来上报"部分集群失败"信息；单集群
+    后端忽略该参数。
     """
 
     name: str = "base"
@@ -73,23 +69,23 @@ class LogBackend(ABC):
     @property
     @abstractmethod
     def tenants(self) -> List[str]:
-        """Configured tenant identifiers (at least one)."""
+        """已配置的租户列表（至少一个）。"""
 
     @abstractmethod
     async def __aenter__(self) -> "LogBackend":
-        """Open underlying resources (HTTP client, etc.)."""
+        """打开底层资源（HTTP client 等）。"""
 
     @abstractmethod
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Close underlying resources."""
+        """关闭底层资源。"""
 
     @abstractmethod
     async def health_check(self) -> Dict[str, Any]:
-        """Return health information about the backend.
+        """返回后端健康信息。
 
-        The dict must include at least ``status`` (``healthy`` /
-        ``degraded`` / ``unhealthy``) and ``backend`` (backend name).
-        Additional backend-specific fields are allowed.
+        字典中至少包含 ``status``（``healthy`` / ``degraded`` /
+        ``unhealthy``）和 ``backend``（后端名）两个字段。允许带上各
+        后端自定义的额外字段。
         """
 
     @abstractmethod
@@ -104,20 +100,17 @@ class LogBackend(ABC):
         instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
     ) -> List[LogEntry]:
-        """Query logs for a single tenant.
+        """查询单个租户的日志。
 
-        Implementations should raise ``BackendQueryError`` /
-        ``ValidationError`` / ``BackendHTTPError`` rather than returning
-        empty results on failure.  When ``cluster_errors`` is provided,
-        multi-cluster backends should populate it with
-        ``{cluster_id: error_message}`` for partial failures that did
-        not abort the whole call.
+        失败时实现应抛出 ``BackendQueryError`` / ``ValidationError`` /
+        ``BackendHTTPError``，而不是返回空结果。``cluster_errors`` 不为
+        ``None`` 时，多集群后端应当把"未导致整体失败的部分集群错误"
+        以 ``{cluster_id: error_message}`` 形式填进去。
 
-        ``instance``: optional cluster id (e.g. ``host:port`` or hostname).
-        Multi-cluster backends restrict the query to the matching cluster
-        only when this is provided; single-cluster backends verify the
-        value matches their own cluster id (raising ``ValidationError``
-        otherwise) and ignore it when matched.
+        ``instance``：可选的集群标识（``host:port`` 或主机名）。多集群
+        后端在该参数提供时只会查询对应集群；单集群后端会校验它是否
+        与自身集群 id 一致（不一致则抛 ``ValidationError``），匹配时
+        忽略。
         """
 
     @abstractmethod
@@ -129,7 +122,7 @@ class LogBackend(ABC):
         instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
     ) -> List[str]:
-        """List label names for a tenant in the (optional) time range."""
+        """列出某租户在（可选）时间窗内出现过的所有标签名。"""
 
     @abstractmethod
     async def get_label_values(
@@ -141,4 +134,4 @@ class LogBackend(ABC):
         instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
     ) -> List[str]:
-        """List values of ``label`` for a tenant in the (optional) range."""
+        """列出某租户在（可选）时间窗内 ``label`` 的所有取值。"""
