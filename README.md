@@ -128,7 +128,7 @@ uv run log-mcp-server
 | `stdio`（server 由 MCP 客户端在用户本机启动） | 服务器端的**绝对路径**（= 本机路径） | `cat` / `open` / 编辑器直接打开 |
 | `streamable-http` / `sse`（server 在远端，比如 K8s） | **下载 URL**：`https://logs-mcp.example.com/mcp/download/<token>` | 浏览器点开或 `curl -O <URL>` |
 
-下载路由挂在 `<MCP 路径前缀>/download/<token>`（streamable-http 默认 `/mcp/download/<token>`，sse 默认 `/sse/download/<token>`），与 MCP 自身的端点**同前缀**。这样反向代理 / Ingress 只要已经把 `/mcp` 转发到后端，下载链接就**自动可用**，无需新增任何转发规则。**仅靠不可猜测的 token 鉴权**（`secrets.token_urlsafe(32)`，约 256 bits 熵）。文件 TTL 默认 1 小时（`LOG_DOWNLOAD_TTL_SECONDS`）；链接成功下载一次后立即失效并删除文件，未下载则在过期后访问、下次注册或服务启动清理时删除。
+下载路由挂在 `<MCP 路径前缀>/download/<token>`（streamable-http 默认 `/mcp/download/<token>`，sse 默认 `/sse/download/<token>`），与 MCP 自身的端点**同前缀**。这样反向代理 / Ingress 只要已经把 `/mcp` 转发到后端，下载链接就**自动可用**，无需新增任何转发规则。**仅靠不可猜测的 token 鉴权**（`secrets.token_urlsafe(32)`，约 256 bits 熵）。文件 TTL 默认 1 小时（`LOG_DOWNLOAD_TTL_SECONDS`）；链接成功下载一次后立即失效并删除文件，未下载则在过期后访问或下次注册时删除。下载注册表是内存态，进程重启后无法识别重启前遗留文件；K8s 默认用 `/tmp` 的 `emptyDir`，Pod 删除时会清理，如果改成持久卷，应额外配置外部清理策略。
 
 **配置项**：
 
@@ -144,7 +144,7 @@ uv run log-mcp-server
 - `csv`：列 `time, tenant, cluster, labels, line`（labels 是 JSON 字符串，逗号不会破列）
 - `txt`：人读 `[time] tenant/cluster {k=v, ...} line`
 
-> **注意**：下载的 `limit` 是**每个租户**的上限，受 `LOG_MAX_LIMIT` 限制（Loki 服务端 `max_entries_limit_per_query` 也要配套）。多租户下载的总条数可能超过单个 `limit`。要下载更多，请缩小时间窗多次调用。
+> **注意**：下载的 `limit` 是**每个租户**的上限，受 `LOG_MAX_LIMIT` 限制（Loki 服务端 `max_entries_limit_per_query` 也要配套）。多租户下载的总条数可能超过单个 `limit`。多 Loki 集群的 `max_entries_limit_per_query` 可以不同；未指定 `instance` 时，低限额集群会按自身上限重试，不会把其它高限额集群的下载上限拉低。已知目标集群时，建议显式传 `instance`，避免查询无关集群。要下载更多，请缩小时间窗多次调用。
 
 ## 客户端租户范围（必填）
 

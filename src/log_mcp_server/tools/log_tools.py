@@ -209,38 +209,46 @@ async def _fan_out(
 ) -> List[TenantQueryResult]:
     """对每个租户并发执行一次协程，并对单租户设置超时。
 
-    ``coro_factory(tenant, cluster_errors)`` 在每个租户上都会被调一次，
-    且每次都会得到一份新的 ``cluster_errors`` 字典，这样多集群扇出
-    后端可以在不同租户之间互不干扰地记录"部分集群失败"信息。
+    ``coro_factory(tenant, cluster_errors, cluster_warnings)`` 在每个
+    租户上都会被调一次，且每次都会得到一份新的字典，这样多集群扇出
+    后端可以在不同租户之间互不干扰地记录"部分集群失败"和"成功但
+    需要用户注意"的信息。
     """
 
     async def _wrap(tenant: str) -> TenantQueryResult:
         cluster_errors: Dict[str, str] = {}
+        cluster_warnings: Dict[str, str] = {}
         try:
             data = await asyncio.wait_for(
-                coro_factory(tenant, cluster_errors),
+                coro_factory(tenant, cluster_errors, cluster_warnings),
                 timeout=_PER_TENANT_TIMEOUT_SECONDS,
             )
             return TenantQueryResult(
-                tenant=tenant, data=data, cluster_errors=cluster_errors
+                tenant=tenant,
+                data=data,
+                cluster_errors=cluster_errors,
+                cluster_warnings=cluster_warnings,
             )
         except asyncio.TimeoutError:
             return TenantQueryResult(
                 tenant=tenant,
                 error=f"timeout after {_PER_TENANT_TIMEOUT_SECONDS:.0f}s",
                 cluster_errors=cluster_errors,
+                cluster_warnings=cluster_warnings,
             )
         except LogMCPError as e:
             return TenantQueryResult(
                 tenant=tenant,
                 error=f"{type(e).__name__}: {e}",
                 cluster_errors=cluster_errors,
+                cluster_warnings=cluster_warnings,
             )
         except Exception as e:  # noqa: BLE001
             return TenantQueryResult(
                 tenant=tenant,
                 error=f"{type(e).__name__}: {e}",
                 cluster_errors=cluster_errors,
+                cluster_warnings=cluster_warnings,
             )
 
     return await asyncio.gather(*[_wrap(t) for t in tenants])
@@ -261,6 +269,18 @@ def _format_failures(results: List[TenantQueryResult]) -> str:
     if not failure_lines:
         return ""
     return "\n".join(["", "**Errors:**", *failure_lines]) + "\n"
+
+
+def _format_warnings(results: List[TenantQueryResult]) -> str:
+    warning_lines: List[str] = []
+    for r in results:
+        for cluster_id, warning in sorted(r.cluster_warnings.items()):
+            warning_lines.append(
+                f"- `{cluster_id}` (cluster, tenant=`{r.tenant}`): {warning}"
+            )
+    if not warning_lines:
+        return ""
+    return "\n".join(["", "**Warnings:**", *warning_lines]) + "\n"
 
 
 def _format_log_entries(entries: List[LogEntry], tz: str) -> str:
@@ -397,7 +417,7 @@ def register_tools(mcp: FastMCP) -> None:
                     不支持指标表达式（rate、count_over_time 等）。
           start     起始时间（RFC3339 / ISO 8601）。省略时默认为30分钟前。
           end       结束时间（RFC3339 / ISO 8601）。省略时默认为当前时间。
-          limit     每个租户的返回条数上限。省略时使用默认值 5000；
+          limit     每个租户的返回条数上限。省略时使用 LOG_DEFAULT_LIMIT；
                     除非用户明确要求"只看前 N 条"或"我要更多"，否则不要显式传值。
           direction backward（默认，最新在前）或 forward（最早在前）。
           tenant    指定租户 ID。省略时查询所有可见租户。
@@ -444,7 +464,9 @@ def register_tools(mcp: FastMCP) -> None:
         )
 
         async def run_for_tenant(
-            t: str, cluster_errors: Dict[str, str]
+            t: str,
+            cluster_errors: Dict[str, str],
+            cluster_warnings: Dict[str, str],
         ) -> List[LogEntry]:
             return await backend.query_logs(
                 query=query,
@@ -455,6 +477,7 @@ def register_tools(mcp: FastMCP) -> None:
                 direction=direction,
                 instance=instance,
                 cluster_errors=cluster_errors,
+                cluster_warnings=cluster_warnings,
             )
 
         results = await _fan_out(tenants, run_for_tenant)
@@ -483,9 +506,14 @@ def register_tools(mcp: FastMCP) -> None:
         )
 
         if not all_entries and failed_tenants and not successful:
-            return header + _format_failures(results) + "\nAll tenant queries failed.\n"
+            return (
+                header
+                + _format_failures(results)
+                + _format_warnings(results)
+                + "\nAll tenant queries failed.\n"
+            )
         if not all_entries:
-            tail = _format_failures(results)
+            tail = _format_failures(results) + _format_warnings(results)
             note = ""
             if not failed_tenants and not any_cluster_failure:
                 note = "\nNo log entries found.\n"
@@ -497,7 +525,13 @@ def register_tools(mcp: FastMCP) -> None:
             return header + tail + note
 
         body = _format_log_entries(all_entries, config.timezone)
-        return header + "\n" + body + _format_failures(results)
+        return (
+            header
+            + "\n"
+            + body
+            + _format_failures(results)
+            + _format_warnings(results)
+        )
 
     # ----- get_labels ---------------------------------------------------
     @mcp.tool()
@@ -587,7 +621,7 @@ def register_tools(mcp: FastMCP) -> None:
           start     起始时间（RFC3339 / ISO 8601）。强烈建议显式给出，
                     避免一次拉过多数据。
           end       结束时间（RFC3339 / ISO 8601）。
-          limit     每个租户的返回条数上限。默认 5000。
+          limit     每个租户的返回条数上限。省略时使用 LOG_MAX_LIMIT。
           direction backward（默认，最新在前）或 forward（最早在前）。
           tenant    指定租户 ID。省略时查询所有客户端可见的租户。
           instance  指定 Loki 实例 ID。
@@ -648,7 +682,9 @@ def register_tools(mcp: FastMCP) -> None:
         )
 
         async def run_for_tenant(
-            t: str, cluster_errors: Dict[str, str]
+            t: str,
+            cluster_errors: Dict[str, str],
+            cluster_warnings: Dict[str, str],
         ) -> List[LogEntry]:
             return await backend.query_logs(
                 query=query,
@@ -659,6 +695,7 @@ def register_tools(mcp: FastMCP) -> None:
                 direction=direction,
                 instance=instance,
                 cluster_errors=cluster_errors,
+                cluster_warnings=cluster_warnings,
             )
 
         results = await _fan_out(tenants, run_for_tenant)
@@ -697,6 +734,7 @@ def register_tools(mcp: FastMCP) -> None:
                 "Query succeeded, but no log entries matched. "
                 "No download file was created.\n"
                 f"{_format_failures(results)}"
+                f"{_format_warnings(results)}"
             )
 
         # 文件名用 tenant 名；多租户时用 "all"。
@@ -797,6 +835,7 @@ def register_tools(mcp: FastMCP) -> None:
             f"{delivery}\n"
             f"{truncated_note}"
             f"{_format_failures(results)}"
+            f"{_format_warnings(results)}"
         )
         return report
 
@@ -892,8 +931,11 @@ async def _list_keys(
     )
 
     async def run_for_tenant(
-        tenant: str, cluster_errors: Dict[str, str]
+        tenant: str,
+        cluster_errors: Dict[str, str],
+        cluster_warnings: Dict[str, str],
     ) -> List[str]:
+        del cluster_warnings
         if label is None:
             return await backend.get_labels(
                 tenant,

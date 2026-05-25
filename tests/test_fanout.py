@@ -9,6 +9,7 @@ import pytest
 from log_mcp_server.backends.base import LogBackend, LogEntry
 from log_mcp_server.backends.fanout import FanoutBackend
 from log_mcp_server.backends.health_cache import HealthCache
+from log_mcp_server.utils.errors import BackendHTTPError
 
 
 class StubBackend(LogBackend):
@@ -68,8 +69,10 @@ class StubBackend(LogBackend):
         direction,
         instance=None,
         cluster_errors=None,
+        cluster_warnings=None,
     ):
         del instance
+        del cluster_warnings
         if self.fail:
             raise RuntimeError(f"{self.cluster_id} query failure")
         return list(self._entries)
@@ -95,6 +98,49 @@ class StubBackend(LogBackend):
         if self.fail:
             raise RuntimeError(f"{self.cluster_id} label values failure")
         return list(self._values)
+
+
+class LimitCappedBackend(StubBackend):
+    """Stub that mimics Loki's per-cluster max_entries_limit_per_query."""
+
+    def __init__(
+        self,
+        cluster_id: str,
+        max_entries_limit: int,
+        entries: List[LogEntry] | None = None,
+    ) -> None:
+        super().__init__(cluster_id, entries=entries)
+        self.max_entries_limit = max_entries_limit
+        self.requested_limits: list[int] = []
+
+    async def query_logs(
+        self,
+        query,
+        tenant,
+        start,
+        end,
+        limit,
+        direction,
+        instance=None,
+        cluster_errors=None,
+    ):
+        self.requested_limits.append(limit)
+        if limit > self.max_entries_limit:
+            raise BackendHTTPError(
+                "HTTP 400: max entries limit per query exceeded, "
+                f"limit > max_entries_limit ({limit} > {self.max_entries_limit})",
+                status_code=400,
+            )
+        return await super().query_logs(
+            query=query,
+            tenant=tenant,
+            start=start,
+            end=end,
+            limit=limit,
+            direction=direction,
+            instance=instance,
+            cluster_errors=cluster_errors,
+        )
 
 
 def _entry(ts: datetime, line: str, cluster: Optional[str] = None):
@@ -222,6 +268,67 @@ async def test_query_partial_failure_continues():
         direction="backward",
     )
     assert [e.line for e in out] == ["a-line"]
+
+
+@pytest.mark.asyncio
+async def test_query_retries_loki_limit_without_lowering_global_limit():
+    t0 = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    high_limit = LimitCappedBackend(
+        "high",
+        max_entries_limit=50_000,
+        entries=[_entry(t0 + timedelta(seconds=i), f"high-{i}") for i in range(5)],
+    )
+    low_limit = LimitCappedBackend(
+        "low",
+        max_entries_limit=4_000,
+        entries=[_entry(t0, "low")],
+    )
+    fan = FanoutBackend([high_limit, low_limit])
+    errors: dict[str, str] = {}
+    warnings: dict[str, str] = {}
+
+    out = await fan.query_logs(
+        query="{app=\"demo\"}",
+        tenant="t1",
+        start=t0 - timedelta(hours=1),
+        end=t0 + timedelta(hours=1),
+        limit=50_000,
+        direction="backward",
+        cluster_errors=errors,
+        cluster_warnings=warnings,
+    )
+
+    assert high_limit.requested_limits == [50_000]
+    assert low_limit.requested_limits == [50_000, 4_000]
+    assert any(entry.line == "high-4" for entry in out)
+    assert any(entry.line == "low" for entry in out)
+    assert errors == {}
+    assert "low" in warnings
+    assert "max_entries_limit_per_query (4000)" in warnings["low"]
+
+
+@pytest.mark.asyncio
+async def test_query_does_not_retry_loki_limit_when_instance_is_explicit():
+    t0 = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    low_limit = LimitCappedBackend("low", max_entries_limit=4_000)
+    fan = FanoutBackend([low_limit])
+    errors: dict[str, str] = {}
+
+    out = await fan.query_logs(
+        query="{app=\"demo\"}",
+        tenant="t1",
+        start=t0 - timedelta(hours=1),
+        end=t0 + timedelta(hours=1),
+        limit=50_000,
+        direction="backward",
+        instance="low",
+        cluster_errors=errors,
+    )
+
+    assert out == []
+    assert low_limit.requested_limits == [50_000]
+    assert "low" in errors
+    assert "max entries limit per query exceeded" in errors["low"]
 
 
 @pytest.mark.asyncio
