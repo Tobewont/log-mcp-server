@@ -458,3 +458,20 @@ async def test_partial_cluster_failures_surface_in_report(tmp_path: Path):
     assert "Log Download Ready" in out
     assert "Errors:" in out
     assert "simulated cluster failure" in out
+
+
+@pytest.mark.asyncio
+async def test_partial_cluster_warnings_surface_in_report(tmp_path: Path):
+    """Successful but degraded fanout behaviour should be visible."""
+    backend = StubBackend(
+        ["tenant-a"],
+        entries_by_tenant={"tenant-a": _entries("tenant-a", 2)},
+    )
+    backend.partial_warn_for = {"tenant-a"}
+    tools, _, _ = _make_setup(backend, tmp_path)
+    out = await tools["download_logs"](
+        query='{a="b"}', ctx=_ctx_stdio(), tenant="tenant-a"
+    )
+    assert "Log Download Ready" in out
+    assert "Warnings:" in out
+    assert "simulated cluster warning" in out

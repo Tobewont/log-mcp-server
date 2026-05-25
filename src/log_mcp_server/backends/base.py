@@ -35,17 +35,22 @@ class TenantQueryResult(Generic[T]):
 
     在多租户扇出场景下使用，让调用方能够区分"没有数据"和"该租户出错了"。
     ``cluster_errors`` 用于携带扇出后端中的"部分集群失败"信息——例如
-    多 Loki 中某个实例挂了但其他还成功了。
+    多 Loki 中某个实例挂了但其他还成功了。``cluster_warnings`` 用于
+    携带"查询成功但需要用户注意"的信息，例如某个 Loki 集群因为自身
+    ``max_entries_limit_per_query`` 较低而降级重试。
     """
 
     tenant: str
     data: Optional[T] = None
     error: Optional[str] = None
     cluster_errors: Dict[str, str] = None  # type: ignore[assignment]
+    cluster_warnings: Dict[str, str] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.cluster_errors is None:
             self.cluster_errors = {}
+        if self.cluster_warnings is None:
+            self.cluster_warnings = {}
 
     @property
     def ok(self) -> bool:
@@ -99,6 +104,7 @@ class LogBackend(ABC):
         direction: str,
         instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
+        cluster_warnings: Optional[Dict[str, str]] = None,
     ) -> List[LogEntry]:
         """查询单个租户的日志。
 
@@ -106,6 +112,8 @@ class LogBackend(ABC):
         ``BackendHTTPError``，而不是返回空结果。``cluster_errors`` 不为
         ``None`` 时，多集群后端应当把"未导致整体失败的部分集群错误"
         以 ``{cluster_id: error_message}`` 形式填进去。
+        ``cluster_warnings`` 不为 ``None`` 时，多集群后端可以把"查询
+        最终成功但有精度 / 完整性提示"的信息填进去。
 
         ``instance``：可选的集群标识（``host:port`` 或主机名）。多集群
         后端在该参数提供时只会查询对应集群；单集群后端会校验它是否

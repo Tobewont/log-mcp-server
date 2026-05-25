@@ -93,7 +93,7 @@ def _build_server(
             "'instance' argument so the query is restricted to that single "
             "cluster instead of fanning out. "
             "IMPORTANT: log-query tools (query_logs, get_labels, "
-            "get_label_values) require the MCP client to declare an "
+            "get_label_values, download_logs) require the MCP client to declare an "
             "explicit tenant subset, either via the X-Allowed-Tenants "
             "request header (HTTP) or the LOKI_CLIENT_TENANTS env var "
             "(stdio). When this is unset the tools refuse to run with a "

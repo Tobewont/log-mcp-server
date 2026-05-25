@@ -132,10 +132,12 @@ class LokiBackend(LogBackend):
         direction: str,
         instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
+        cluster_warnings: Optional[Dict[str, str]] = None,
     ) -> List[LogEntry]:
-        # Single-cluster backend: ``cluster_errors`` is ignored. Errors
-        # are surfaced by raising instead.
+        # Single-cluster backend: ``cluster_errors`` / ``cluster_warnings``
+        # are ignored. Errors are surfaced by raising instead.
         del cluster_errors
+        del cluster_warnings
         self._check_instance(instance)
         validate_tenant(tenant)
         if not query or not query.strip():

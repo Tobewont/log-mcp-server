@@ -89,6 +89,7 @@ class StubBackend(LogBackend):
         self._entries = entries_by_tenant or {}
         self.fail_for: set[str] = set()
         self.partial_fail_for: set[str] = set()
+        self.partial_warn_for: set[str] = set()
         self.health_status = "healthy"
 
     @property
@@ -120,12 +121,15 @@ class StubBackend(LogBackend):
         direction: str,
         instance=None,
         cluster_errors=None,
+        cluster_warnings=None,
     ) -> List[LogEntry]:
         del instance
         if tenant in self.fail_for:
             raise RuntimeError(f"tenant {tenant} broken")
         if cluster_errors is not None and tenant in self.partial_fail_for:
             cluster_errors[f"sub-of-{tenant}"] = "simulated cluster failure"
+        if cluster_warnings is not None and tenant in self.partial_warn_for:
+            cluster_warnings[f"sub-of-{tenant}"] = "simulated cluster warning"
         return list(self._entries.get(tenant, []))
 
     async def get_labels(
@@ -276,6 +280,20 @@ async def test_query_logs_cluster_errors_surfaced():
     assert "Errors:" in out
     assert "sub-of-tenant-a" in out
     assert "simulated cluster failure" in out
+
+
+@pytest.mark.asyncio
+async def test_query_logs_cluster_warnings_surfaced():
+    e1 = LogEntry(datetime(2025, 1, 1, tzinfo=timezone.utc), {"job": "a"}, "L1")
+    backend = StubBackend(["tenant-a"], entries_by_tenant={"tenant-a": [e1]})
+    backend.partial_warn_for = {"tenant-a"}
+    tools, _ = _make_setup(backend)
+
+    out = await tools["query_logs"](query='{a="b"}', ctx=_ctx_stdio())
+    assert "L1" in out
+    assert "Warnings:" in out
+    assert "sub-of-tenant-a" in out
+    assert "simulated cluster warning" in out
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -24,6 +25,9 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 _PER_CLUSTER_TIMEOUT = 30.0
+_LOKI_LIMIT_RE = re.compile(
+    r"max_entries_limit\s*\(\s*(?P<requested>\d+)\s*>\s*(?P<cap>\d+)\s*\)"
+)
 
 
 class FanoutBackend(LogBackend):
@@ -113,6 +117,84 @@ class FanoutBackend(LogBackend):
             )
         except asyncio.TimeoutError as e:
             raise TimeoutError(f"timeout after {_PER_CLUSTER_TIMEOUT:.0f}s") from e
+
+    @staticmethod
+    def _loki_limit_cap(exc: Exception, requested_limit: int) -> Optional[int]:
+        """Extract Loki's per-cluster max_entries_limit_per_query cap.
+
+        Loki returns messages like:
+        ``max_entries_limit (50000 > 4000)``.
+        """
+        match = _LOKI_LIMIT_RE.search(str(exc))
+        if not match:
+            return None
+        requested = int(match.group("requested"))
+        cap = int(match.group("cap"))
+        if requested != requested_limit or cap <= 0 or cap >= requested_limit:
+            return None
+        return cap
+
+    async def _retry_loki_limit_failures(
+        self,
+        active: List[LogBackend],
+        results: List[Any],
+        limit: int,
+        coro_factory_for_limit,
+        cluster_warnings: Optional[Dict[str, str]],
+    ) -> List[Any]:
+        """Retry only clusters that reject the shared fanout limit.
+
+        Different Loki clusters can have different per-tenant overrides.
+        In a broad fanout query, a low-cap cluster should not force the
+        whole logical query to use that lower cap.
+        """
+        retry_jobs: List[tuple[int, LogBackend, int]] = []
+        for idx, (backend, res) in enumerate(zip(active, results)):
+            if not isinstance(res, Exception):
+                continue
+            cap = self._loki_limit_cap(res, limit)
+            if cap is None:
+                continue
+            retry_jobs.append((idx, backend, cap))
+
+        if not retry_jobs:
+            return results
+
+        retried = await asyncio.gather(
+            *(
+                self._run(backend, coro_factory_for_limit(cap))
+                for _, backend, cap in retry_jobs
+            ),
+            return_exceptions=True,
+        )
+        updated = list(results)
+        for (idx, backend, cap), res in zip(retry_jobs, retried):
+            cid = self._cluster_id(backend)
+            if isinstance(res, Exception):
+                logger.warning(
+                    "Cluster retry after Loki limit cap failed",
+                    cluster=cid,
+                    requested_limit=limit,
+                    retry_limit=cap,
+                    error=f"{type(res).__name__}: {res}",
+                )
+            else:
+                msg = (
+                    "Retried with this cluster's Loki "
+                    f"max_entries_limit_per_query ({cap}) after the original "
+                    f"limit ({limit}) was rejected. Results from this cluster "
+                    "may be truncated at the lower cap."
+                )
+                logger.info(
+                    "Cluster retried with its Loki limit cap",
+                    cluster=cid,
+                    requested_limit=limit,
+                    retry_limit=cap,
+                )
+                if cluster_warnings is not None:
+                    cluster_warnings[cid] = msg
+            updated[idx] = res
+        return updated
 
     def _record_failures(
         self,
@@ -206,23 +288,35 @@ class FanoutBackend(LogBackend):
         direction: str,
         instance: Optional[str] = None,
         cluster_errors: Optional[Dict[str, str]] = None,
+        cluster_warnings: Optional[Dict[str, str]] = None,
     ) -> List[LogEntry]:
         active = self._resolve_instance(self._active_backends(), instance)
 
-        async def call(backend: LogBackend) -> List[LogEntry]:
-            return await backend.query_logs(
-                query=query,
-                tenant=tenant,
-                start=start,
-                end=end,
-                limit=limit,
-                direction=direction,
-            )
+        def call_with_limit(query_limit: int):
+            async def call(backend: LogBackend) -> List[LogEntry]:
+                return await backend.query_logs(
+                    query=query,
+                    tenant=tenant,
+                    start=start,
+                    end=end,
+                    limit=query_limit,
+                    direction=direction,
+                )
+
+            return call
 
         results = await asyncio.gather(
-            *(self._run(b, call) for b in active),
+            *(self._run(b, call_with_limit(limit)) for b in active),
             return_exceptions=True,
         )
+        if instance is None:
+            results = await self._retry_loki_limit_failures(
+                active,
+                results,
+                limit,
+                call_with_limit,
+                cluster_warnings,
+            )
         self._record_failures(
             active, results, cluster_errors, op="query_logs", tenant=tenant
         )

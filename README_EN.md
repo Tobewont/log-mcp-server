@@ -127,7 +127,7 @@ Run a LogQL query and write the results to a file the **user can pull onto their
 | `stdio` (server is launched by the MCP client on the user's machine) | An **absolute path** on the local filesystem | `cat` / `open` / editor |
 | `streamable-http` / `sse` (server runs remote, e.g. on K8s) | A **download URL** like `https://logs-mcp.example.com/mcp/download/<token>` | Open in a browser or `curl -O <URL>` |
 
-The download route is mounted under `<MCP path prefix>/download/<token>` (default `/mcp/download/<token>` for streamable-http; `/sse/download/<token>` for sse), i.e. **under the same prefix as the MCP endpoint itself**.  Any reverse-proxy / Ingress rule that already forwards `/mcp` to this backend automatically covers downloads — **no extra forwarding rule needed**.  The token is the only credential — `secrets.token_urlsafe(32)` (~256 bits of entropy).  Files live for `LOG_DOWNLOAD_TTL_SECONDS` (1 hour by default); a successful download consumes the token and deletes the file immediately, while unused expired links are cleaned up when accessed, when a new download is registered, or on server startup.
+The download route is mounted under `<MCP path prefix>/download/<token>` (default `/mcp/download/<token>` for streamable-http; `/sse/download/<token>` for sse), i.e. **under the same prefix as the MCP endpoint itself**.  Any reverse-proxy / Ingress rule that already forwards `/mcp` to this backend automatically covers downloads — **no extra forwarding rule needed**.  The token is the only credential — `secrets.token_urlsafe(32)` (~256 bits of entropy).  Files live for `LOG_DOWNLOAD_TTL_SECONDS` (1 hour by default); a successful download consumes the token and deletes the file immediately, while unused expired links are cleaned up when accessed or when a new download is registered. The download registry is in-memory, so after a process restart it cannot identify files left by the previous process. The default K8s deployment writes to `/tmp` on an `emptyDir`, which is cleaned when the Pod is deleted; use an external cleanup policy if you switch to persistent storage.
 
 **Configuration**:
 
@@ -143,7 +143,7 @@ The download route is mounted under `<MCP path prefix>/download/<token>` (defaul
 - `csv` — `time, tenant, cluster, labels, line`; `labels` is a JSON string so commas inside don't break columns.
 - `txt` — human-readable, `[time] tenant/cluster {k=v, ...} line`.
 
-> The download `limit` is a **per-tenant** cap bounded by `LOG_MAX_LIMIT` (and Loki's own `max_entries_limit_per_query`).  A multi-tenant download may contain more total entries than a single `limit`.  To download more, narrow the time window and call again.
+> The download `limit` is a **per-tenant** cap bounded by `LOG_MAX_LIMIT` (and Loki's own `max_entries_limit_per_query`). A multi-tenant download may contain more total entries than a single `limit`. Multi-Loki clusters may have different `max_entries_limit_per_query` values; when `instance` is omitted, low-cap clusters are retried with their own cap and do not lower the limit used for higher-cap clusters. If the target cluster is known, pass `instance` explicitly to avoid querying unrelated clusters. To download more, narrow the time window and call again.
 
 ## Client-side tenant scope (required)
 
