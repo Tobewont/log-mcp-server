@@ -238,7 +238,7 @@ LOKI_TENANTS="team-a|team-b"
 |---|---|---|
 | `stdio` | — | Claude Desktop 等本地 MCP 客户端 |
 | `sse` | `/sse` | 旧版 HTTP/SSE 模式（兼容性保留） |
-| `streamable-http` | `/mcp` | **当前推荐**的 HTTP 模式 |
+| `streamable-http` | `MCP_PATH`（默认 `/mcp`） | **当前推荐**的 HTTP 模式 |
 
 ### 选择优先级
 
@@ -289,7 +289,7 @@ log-mcp-server
 }
 ```
 
-> `/mcp` → streamable-http（推荐），`/sse` → SSE（旧版兼容）
+> `/mcp`（或 `MCP_PATH` 指定的路径）→ streamable-http（推荐），`/sse` → SSE（旧版兼容）。`MCP_PATH` 只影响 streamable-http，SSE 始终为 `/sse`。
 
 ## Docker 构建与启动
 
@@ -405,6 +405,7 @@ kubectl -n log-mcp port-forward svc/log-mcp-server 8000:8000
 | `MCP_TRANSPORT` | `stdio` / `sse` / `streamable-http` | `stdio` |
 | `MCP_HOST` | HTTP 模式监听地址 | `127.0.0.1` |
 | `MCP_PORT` | HTTP 模式端口 | `8000` |
+| `MCP_PATH` | streamable-http 挂载的 URL 路径前缀（必须以 `/` 开头）；SSE / stdio 不受影响 | `/mcp` |
 | `LOG_LEVEL` | 服务日志级别（`DEBUG` 时同时开启 FastMCP debug） | `INFO` |
 | **后端选择** | | |
 | `LOG_BACKEND` | 当前激活的后端 | `loki` |

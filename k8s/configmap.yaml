@@ -45,6 +45,10 @@ data:
   MCP_TRANSPORT: "streamable-http"
   MCP_HOST: "0.0.0.0"
   MCP_PORT: "8000"
+  # streamable-http 传输挂载的 URL 路径前缀（必须以 / 开头）。
+  # SSE / stdio 不受此配置影响。便于和其它 MCP 服务统一规划
+  # Ingress 路径。
+  MCP_PATH: "/mcp"
 
   # ---- 日志下载（download_logs 工具）---------------------------------
   # 工具把可下载文件写到这个目录下，服务端通过
