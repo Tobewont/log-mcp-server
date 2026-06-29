@@ -72,6 +72,8 @@ def _build_server(
     config: LogConfig,
     registry: Optional[DownloadRegistry] = None,
     download_url_path: str = "/mcp/download",
+    *,
+    streamable_http_path: str = "/mcp",
 ) -> FastMCP:
     is_debug = config.log_level == "DEBUG"
     mcp = FastMCP(
@@ -120,6 +122,7 @@ def _build_server(
         log_level=config.log_level,
         host=config.mcp_host,
         port=config.mcp_port,
+        streamable_http_path=streamable_http_path,
         lifespan=_build_lifespan(config, registry, download_url_path),
     )
     register_tools(mcp)
@@ -169,19 +172,23 @@ def cli_main() -> None:
     # 文件写到用户机器上，不需要 URL。
     registry: Optional[DownloadRegistry] = None
     download_url_path = "/mcp/download"
+    streamable_http_path = config.mcp_path
     if transport in ("streamable-http", "sse"):
         registry = DownloadRegistry(ttl_seconds=config.download_ttl_seconds)
-        # 这个路径稍后在 _run_http 里也会用到，并通过 initialize_tools
-        # 传给下载工具。这里提前计算同样的值，让 lifespan 也能拿到。
-        # （此刻还不能问 FastMCP，因为 _build_server 还没跑。）
-        # streamable-http / sse 在 FastMCP.settings 里分别默认是
-        # ``/mcp`` 和 ``/sse``。
-        download_url_path = (
-            "/mcp/download" if transport == "streamable-http" else "/sse/download"
-        )
+        # 下载路由挂在 MCP 主端点同前缀下：streamable-http 跟随
+        # ``MCP_PATH``（默认 ``/mcp``），SSE 仍使用 FastMCP 默认的
+        # ``/sse``，保持与旧行为一致。
+        if transport == "streamable-http":
+            download_url_path = f"{config.mcp_path.rstrip('/')}/download"
+        else:
+            streamable_http_path = "/mcp"
+            download_url_path = "/sse/download"
 
     mcp = _build_server(
-        config, registry=registry, download_url_path=download_url_path
+        config,
+        registry=registry,
+        download_url_path=download_url_path,
+        streamable_http_path=streamable_http_path,
     )
 
     logger.info(

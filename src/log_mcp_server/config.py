@@ -148,6 +148,14 @@ class LogConfig(BaseSettings):
         description="HTTP 传输的监听端口",
         validation_alias=AliasChoices("mcp_port", "MCP_PORT"),
     )
+    # streamable-http 传输挂载的 URL 路径前缀。SSE / stdio 不受此
+    # 配置影响（SSE 仍使用 FastMCP 默认的 ``/sse``）。抽成 env 是为了
+    # 和其它 MCP 服务统一规划反代 / Ingress 路径。必须以 ``/`` 开头。
+    mcp_path: str = Field(
+        default="/mcp",
+        description="streamable-http 传输挂载的 URL 路径前缀",
+        validation_alias=AliasChoices("mcp_path", "MCP_PATH"),
+    )
     log_level: str = Field(
         default="INFO",
         description="服务自身日志级别（DEBUG / INFO / WARNING / ERROR）",
@@ -346,6 +354,18 @@ class LogConfig(BaseSettings):
         if not v:
             raise ValueError("MCP host cannot be empty")
         return v
+
+    @field_validator("mcp_path")
+    @classmethod
+    def _validate_mcp_path(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("MCP path cannot be empty")
+        if not v.startswith("/"):
+            raise ValueError("MCP path must start with '/'")
+        # 折叠多余的斜杠，去掉末尾斜杠，便于后续拼 ``<path>/download``。
+        segments = [s for s in v.split("/") if s]
+        return "/" + "/".join(segments)
 
     @field_validator("backend")
     @classmethod

@@ -238,7 +238,7 @@ The server supports three MCP transports:
 |---|---|---|
 | `stdio` | — | Local MCP clients such as Claude Desktop |
 | `sse` | `/sse` | Legacy HTTP/SSE (kept for compatibility) |
-| `streamable-http` | `/mcp` | **Recommended** modern HTTP transport |
+| `streamable-http` | `MCP_PATH` (default `/mcp`) | **Recommended** modern HTTP transport |
 
 ### Selection priority
 
@@ -289,7 +289,7 @@ The client only needs the `url` — the protocol is inferred from the path:
 }
 ```
 
-> `/mcp` → streamable-http (recommended), `/sse` → SSE (legacy).
+> `/mcp` (or whatever `MCP_PATH` is set to) → streamable-http (recommended), `/sse` → SSE (legacy). `MCP_PATH` only affects the streamable-http transport; SSE is always `/sse`.
 
 ## Docker
 
@@ -388,6 +388,7 @@ Configuration sources (highest priority first):
 | `MCP_TRANSPORT` | `stdio` / `sse` / `streamable-http` | `stdio` |
 | `MCP_HOST` | Listen address (HTTP transports only) | `127.0.0.1` |
 | `MCP_PORT` | Listen port (HTTP transports only) | `8000` |
+| `MCP_PATH` | URL path prefix for the streamable-http transport (must start with `/`); ignored for SSE / stdio | `/mcp` |
 | `LOG_LEVEL` | Server log level (`DEBUG` also enables FastMCP debug) | `INFO` |
 | **Backend** | | |
 | `LOG_BACKEND` | Active backend | `loki` |

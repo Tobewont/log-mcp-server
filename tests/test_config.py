@@ -63,6 +63,30 @@ class TestEnv:
         assert cfg.mcp_transport == "streamable-http"
         assert cfg.log_level == "DEBUG"
 
+    def test_mcp_path_default(self):
+        cfg = LogConfig()
+        assert cfg.mcp_path == "/mcp"
+
+    def test_mcp_path_env(self, monkeypatch):
+        monkeypatch.setenv("MCP_PATH", "/logs-mcp")
+        cfg = LogConfig()
+        assert cfg.mcp_path == "/logs-mcp"
+
+    def test_mcp_path_strips_trailing_slash(self, monkeypatch):
+        monkeypatch.setenv("MCP_PATH", "/logs-mcp/")
+        cfg = LogConfig()
+        assert cfg.mcp_path == "/logs-mcp"
+
+    def test_mcp_path_rejects_missing_leading_slash(self, monkeypatch):
+        monkeypatch.setenv("MCP_PATH", "logs-mcp")
+        with pytest.raises(Exception):
+            LogConfig()
+
+    def test_mcp_path_rejects_empty(self, monkeypatch):
+        monkeypatch.setenv("MCP_PATH", "   ")
+        with pytest.raises(Exception):
+            LogConfig()
+
 
 class TestYamlConfig:
     def test_yaml_load(self, tmp_path, monkeypatch):
