@@ -1,4 +1,5 @@
 """End-to-end tool tests against a stubbed backend."""
+
 from __future__ import annotations
 
 import re
@@ -154,6 +155,22 @@ class StubBackend(LogBackend):
             raise RuntimeError(f"tenant {tenant} broken")
         return [f"{label}-1", f"{label}-2"]
 
+    async def count_logs(
+        self,
+        query,
+        tenant,
+        start,
+        end,
+        instance=None,
+        cluster_errors=None,
+    ):
+        del instance
+        if tenant in self.fail_for:
+            raise RuntimeError(f"tenant {tenant} broken")
+        if cluster_errors is not None and tenant in self.partial_fail_for:
+            cluster_errors[f"sub-of-{tenant}"] = "simulated cluster failure"
+        return len(self._entries.get(tenant, []))
+
 
 def _capture_tools():
     """Capture FastMCP-registered tools into a dict for direct invocation."""
@@ -225,7 +242,9 @@ async def test_query_logs_aggregates_tenants():
     )
     tools, _ = _make_setup(backend)
 
-    out = await tools["query_logs"](query='{job="a"}', ctx=_ctx_stdio())
+    out = await tools["query_logs"](
+        query='{job="a"}', ctx=_ctx_stdio(), verbosity="full"
+    )
     assert "Total Entries:** 2" in out
     assert "L1" in out and "L2" in out
     # No invalid time format like "+00:00Z"
@@ -242,7 +261,7 @@ async def test_query_logs_partial_failure_surfaces_error():
     backend.fail_for = {"tenant-b"}
     tools, _ = _make_setup(backend)
 
-    out = await tools["query_logs"](query='{a="b"}', ctx=_ctx_stdio())
+    out = await tools["query_logs"](query='{a="b"}', ctx=_ctx_stdio(), verbosity="full")
     assert "Total Entries:** 1" in out
     assert "Errors:" in out
     assert "tenant-b" in out
@@ -263,9 +282,7 @@ async def test_query_logs_invalid_direction_rejected():
     backend = StubBackend(["tenant-a"])
     tools, _ = _make_setup(backend)
     with pytest.raises(RuntimeError, match="Invalid direction"):
-        await tools["query_logs"](
-            query='{a="b"}', direction="up", ctx=_ctx_stdio()
-        )
+        await tools["query_logs"](query='{a="b"}', direction="up", ctx=_ctx_stdio())
 
 
 @pytest.mark.asyncio
@@ -301,9 +318,7 @@ async def test_query_logs_limit_above_max_rejected():
     backend = StubBackend(["tenant-a"])
     tools, _ = _make_setup(backend)
     with pytest.raises(RuntimeError, match="exceeds maximum"):
-        await tools["query_logs"](
-            query='{a="b"}', limit=999_999, ctx=_ctx_stdio()
-        )
+        await tools["query_logs"](query='{a="b"}', limit=999_999, ctx=_ctx_stdio())
 
 
 @pytest.mark.asyncio
@@ -360,7 +375,7 @@ async def test_query_logs_single_tenant():
     tools, _ = _make_setup(backend)
 
     out = await tools["query_logs"](
-        query='{job="a"}', tenant="tenant-a", ctx=_ctx_stdio()
+        query='{job="a"}', tenant="tenant-a", ctx=_ctx_stdio(), verbosity="full"
     )
     assert "Total Entries:** 1" in out
     assert "L1" in out
@@ -439,6 +454,7 @@ async def test_query_logs_instance_appears_in_header():
         tenant="tenant-a",
         instance="loki-sh:3100",
         ctx=_ctx_stdio(),
+        verbosity="full",
     )
     assert "**Instance:** `loki-sh:3100`" in out
 
@@ -448,7 +464,7 @@ async def test_query_logs_default_instance_marker():
     backend = StubBackend(["tenant-a"])
     tools, _ = _make_setup(backend)
     out = await tools["query_logs"](
-        query='{a="b"}', tenant="tenant-a", ctx=_ctx_stdio()
+        query='{a="b"}', tenant="tenant-a", ctx=_ctx_stdio(), verbosity="full"
     )
     assert "**Instance:** `*all healthy*`" in out
 
@@ -468,7 +484,7 @@ async def test_http_header_restricts_fanout():
     tools, _ = _make_setup(backend, with_client_filter=False)
 
     out = await tools["query_logs"](
-        query='{a="b"}', ctx=_ctx_http("tenant-a")
+        query='{a="b"}', ctx=_ctx_http("tenant-a"), verbosity="full"
     )
     assert "L1" in out
     assert "L2" not in out
@@ -492,9 +508,7 @@ async def test_http_header_empty_intersection_errors_clearly():
     backend = StubBackend(["tenant-a", "tenant-b"])
     tools, _ = _make_setup(backend, with_client_filter=False)
     with pytest.raises(RuntimeError, match="No tenants are accessible"):
-        await tools["query_logs"](
-            query='{a="b"}', ctx=_ctx_http("tenant-c,tenant-d")
-        )
+        await tools["query_logs"](query='{a="b"}', ctx=_ctx_http("tenant-c,tenant-d"))
 
 
 @pytest.mark.asyncio
@@ -516,7 +530,7 @@ async def test_stdio_env_restricts_fanout(monkeypatch):
     )
     tools, _ = _make_setup(backend, cfg)
 
-    out = await tools["query_logs"](query='{a="b"}', ctx=_ctx_stdio())
+    out = await tools["query_logs"](query='{a="b"}', ctx=_ctx_stdio(), verbosity="full")
     assert "L1" in out and "L2" not in out
     assert "Tenants Queried:** `tenant-a`" in out
 
@@ -612,9 +626,7 @@ async def test_query_logs_refuses_even_with_explicit_tenant_when_unset():
     backend = StubBackend(["tenant-a", "tenant-b"])
     tools, _ = _make_setup(backend, with_client_filter=False)
     with pytest.raises(RuntimeError, match="No tenant scope is configured"):
-        await tools["query_logs"](
-            query='{a="b"}', tenant="tenant-a", ctx=_ctx_stdio()
-        )
+        await tools["query_logs"](query='{a="b"}', tenant="tenant-a", ctx=_ctx_stdio())
 
 
 @pytest.mark.asyncio
@@ -684,7 +696,235 @@ async def test_http_header_with_extra_whitespace_is_normalised():
     """`'  tenant-a  ,  tenant-b '` should parse to two tenants."""
     backend = StubBackend(["tenant-a", "tenant-b"])
     tools, _ = _make_setup(backend, with_client_filter=False)
-    out = await tools["health_check"](
-        ctx=_ctx_http("  tenant-a  ,  tenant-b ,, ,")
-    )
+    out = await tools["health_check"](ctx=_ctx_http("  tenant-a  ,  tenant-b ,, ,"))
     assert "Allowed Tenants (this session):** tenant-a, tenant-b" in out
+
+
+# ---------------------------------------------------------------------------
+# verbosity: compact / normal
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_query_logs_compact_is_default_and_slim():
+    e1 = LogEntry(
+        datetime(2025, 9, 1, tzinfo=timezone.utc), {"job": "a", "pod": "p1"}, "L1"
+    )
+    e2 = LogEntry(
+        datetime(2025, 9, 1, tzinfo=timezone.utc), {"job": "a", "pod": "p2"}, "L2"
+    )
+    backend = StubBackend(["tenant-a"], entries_by_tenant={"tenant-a": [e1, e2]})
+    tools, _ = _make_setup(backend)  # default verbosity == compact
+    out = await tools["query_logs"](
+        query='{job="a"}', tenant="tenant-a", ctx=_ctx_stdio()
+    )
+    assert "L1" in out and "L2" in out
+    assert "## Entry" not in out
+    assert "**Time:**" not in out
+    assert "**Labels:**" not in out
+    assert "**Total Entries:**" not in out
+
+
+@pytest.mark.asyncio
+async def test_query_logs_normal_lifts_common_labels():
+    e1 = LogEntry(
+        datetime(2025, 9, 1, 7, 47, 3, tzinfo=timezone.utc),
+        {"job": "a", "pod": "p1"},
+        "L1",
+    )
+    e2 = LogEntry(
+        datetime(2025, 9, 1, 7, 48, 3, tzinfo=timezone.utc),
+        {"job": "a", "pod": "p2"},
+        "L2",
+    )
+    backend = StubBackend(["tenant-a"], entries_by_tenant={"tenant-a": [e1, e2]})
+    tools, _ = _make_setup(backend)
+    out = await tools["query_logs"](
+        query='{job="a"}',
+        tenant="tenant-a",
+        ctx=_ctx_stdio(),
+        verbosity="normal",
+    )
+    assert "**Common Labels:**" in out
+    header_line = next(ln for ln in out.split("\n") if "Common Labels" in ln)
+    assert "job=a" in header_line
+    assert "pod=p1" in out and "pod=p2" in out
+    assert "09-01 07:47:03" in out
+    assert "## Entry" not in out
+
+
+@pytest.mark.asyncio
+async def test_query_logs_invalid_verbosity_rejected():
+    backend = StubBackend(["tenant-a"])
+    tools, _ = _make_setup(backend)
+    with pytest.raises(RuntimeError, match="Invalid verbosity"):
+        await tools["query_logs"](
+            query='{a="b"}',
+            tenant="tenant-a",
+            ctx=_ctx_stdio(),
+            verbosity="loud",
+        )
+
+
+@pytest.mark.asyncio
+async def test_query_logs_compact_folds_repeats():
+    ts = datetime(2025, 9, 1, tzinfo=timezone.utc)
+    entries = [LogEntry(ts, {"job": "a"}, f"request id=100{i} done") for i in range(5)]
+    backend = StubBackend(["tenant-a"], entries_by_tenant={"tenant-a": entries})
+    tools, _ = _make_setup(backend)
+    out = await tools["query_logs"](
+        query='{job="a"}', tenant="tenant-a", ctx=_ctx_stdio()
+    )
+    assert "×5" in out
+
+
+@pytest.mark.asyncio
+async def test_query_logs_compact_no_fold_when_disabled():
+    cfg = LogConfig(
+        addr="http://stub:3100",
+        tenants="tenant-a",
+        client_tenants="tenant-a",
+        timezone="UTC",
+        default_limit=50,
+        default_time_range_minutes=15,
+        fold_repeats=False,
+    )
+    ts = datetime(2025, 9, 1, tzinfo=timezone.utc)
+    entries = [LogEntry(ts, {"job": "a"}, f"request id=100{i} done") for i in range(5)]
+    backend = StubBackend(["tenant-a"], entries_by_tenant={"tenant-a": entries})
+    tools, _ = _make_setup(backend, cfg)
+    out = await tools["query_logs"](
+        query='{job="a"}', tenant="tenant-a", ctx=_ctx_stdio()
+    )
+    assert "×5" not in out
+
+
+@pytest.mark.asyncio
+async def test_query_logs_compact_truncates_long_line():
+    cfg = LogConfig(
+        addr="http://stub:3100",
+        tenants="tenant-a",
+        client_tenants="tenant-a",
+        timezone="UTC",
+        default_limit=50,
+        default_time_range_minutes=15,
+        max_line_chars=20,
+    )
+    ts = datetime(2025, 9, 1, tzinfo=timezone.utc)
+    long_line = "X" * 200
+    backend = StubBackend(
+        ["tenant-a"],
+        entries_by_tenant={"tenant-a": [LogEntry(ts, {"job": "a"}, long_line)]},
+    )
+    tools, _ = _make_setup(backend, cfg)
+    out = await tools["query_logs"](
+        query='{job="a"}', tenant="tenant-a", ctx=_ctx_stdio()
+    )
+    assert "chars truncated, full line via download_logs" in out
+    assert "X" * 200 not in out
+
+
+@pytest.mark.asyncio
+async def test_query_logs_full_multi_origin_keeps_entry_headers():
+    e1 = LogEntry(
+        datetime(2025, 1, 1, tzinfo=timezone.utc),
+        {"job": "a"},
+        "L1",
+        tenant="tenant-a",
+        cluster="c1",
+    )
+    e2 = LogEntry(
+        datetime(2025, 1, 1, tzinfo=timezone.utc),
+        {"job": "b"},
+        "L2",
+        tenant="tenant-b",
+        cluster="c2",
+    )
+    backend = StubBackend(
+        ["tenant-a", "tenant-b"],
+        entries_by_tenant={"tenant-a": [e1], "tenant-b": [e2]},
+    )
+    tools, _ = _make_setup(backend)
+    out = await tools["query_logs"](query='{a="b"}', ctx=_ctx_stdio(), verbosity="full")
+    assert "## Entry 1" in out
+    assert "**Labels:**" in out
+
+
+@pytest.mark.asyncio
+async def test_query_logs_truncation_note_when_limit_reached():
+    cfg = LogConfig(
+        addr="http://stub:3100",
+        tenants="tenant-a",
+        client_tenants="tenant-a",
+        timezone="UTC",
+        default_limit=2,
+        default_time_range_minutes=15,
+    )
+    ts = datetime(2025, 9, 1, tzinfo=timezone.utc)
+    entries = [LogEntry(ts, {"job": "a"}, f"L{i}") for i in range(2)]
+    backend = StubBackend(["tenant-a"], entries_by_tenant={"tenant-a": entries})
+    tools, _ = _make_setup(backend, cfg)
+    out = await tools["query_logs"](
+        query='{job="a"}', tenant="tenant-a", ctx=_ctx_stdio()
+    )
+    assert "may have been truncated" in out
+
+
+# ---------------------------------------------------------------------------
+# count_logs tool
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_count_logs_reports_per_tenant_and_total():
+    ts = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    a = [LogEntry(ts, {"job": "a"}, "L1"), LogEntry(ts, {"job": "a"}, "L2")]
+    b = [LogEntry(ts, {"job": "b"}, "L3")]
+    backend = StubBackend(
+        ["tenant-a", "tenant-b"],
+        entries_by_tenant={"tenant-a": a, "tenant-b": b},
+    )
+    tools, _ = _make_setup(backend)
+    out = await tools["count_logs"](query='{job="a"}', ctx=_ctx_stdio())
+    assert "`tenant-a`: 2" in out
+    assert "`tenant-b`: 1" in out
+    assert "**Total:** 3" in out
+
+
+@pytest.mark.asyncio
+async def test_count_logs_refuses_when_filter_unset():
+    backend = StubBackend(["tenant-a", "tenant-b"])
+    tools, _ = _make_setup(backend, with_client_filter=False)
+    with pytest.raises(RuntimeError, match="No tenant scope is configured"):
+        await tools["count_logs"](query='{a="b"}', ctx=_ctx_stdio())
+
+
+@pytest.mark.asyncio
+async def test_count_logs_single_tenant():
+    ts = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    a = [LogEntry(ts, {"job": "a"}, "L1")]
+    backend = StubBackend(["tenant-a", "tenant-b"], entries_by_tenant={"tenant-a": a})
+    tools, _ = _make_setup(backend)
+    out = await tools["count_logs"](
+        query='{job="a"}', tenant="tenant-a", ctx=_ctx_stdio()
+    )
+    assert "`tenant-a`: 1" in out
+    assert "tenant-b" not in out
+    assert "**Total:** 1" in out
+
+
+# ---------------------------------------------------------------------------
+# get_labels / get_label_values multi-tenant merge
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_get_label_values_merges_across_tenants():
+    backend = StubBackend(["tenant-a", "tenant-b"])
+    tools, _ = _make_setup(backend)
+    out = await tools["get_label_values"](label="env", ctx=_ctx_stdio())
+    assert out.count("`env-1`") == 1
+    assert "tenants: tenant-a, tenant-b" in out
+
+
+@pytest.mark.asyncio
+async def test_get_labels_single_tenant_stays_sectioned():
+    backend = StubBackend(["tenant-a", "tenant-b"])
+    tools, _ = _make_setup(backend)
+    out = await tools["get_labels"](tenant="tenant-a", ctx=_ctx_stdio())
+    assert "## Tenant: `tenant-a`" in out
+    assert "job" in out

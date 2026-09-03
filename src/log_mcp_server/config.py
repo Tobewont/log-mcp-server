@@ -10,6 +10,7 @@
    ``~/.loki-config.yaml``）
 5. 内置默认值
 """
+
 from __future__ import annotations
 
 import os
@@ -93,9 +94,7 @@ class _YamlConfigSource(PydanticBaseSettingsSource):
         super().__init__(settings_cls)
         self._data: Dict[str, Any] = _load_yaml_config()
 
-    def get_field_value(
-        self, field, field_name: str
-    ) -> Tuple[Any, str, bool]:
+    def get_field_value(self, field, field_name: str) -> Tuple[Any, str, bool]:
         if field_name in self._data:
             return self._data[field_name], field_name, False
         return None, field_name, False
@@ -184,16 +183,12 @@ class LogConfig(BaseSettings):
     health_check_interval: float = Field(
         default=300.0,
         description="后台健康刷新间隔（秒）",
-        validation_alias=AliasChoices(
-            "health_check_interval", "HEALTH_CHECK_INTERVAL"
-        ),
+        validation_alias=AliasChoices("health_check_interval", "HEALTH_CHECK_INTERVAL"),
     )
     health_check_timeout: float = Field(
         default=5.0,
         description="单个集群健康探测超时（秒）",
-        validation_alias=AliasChoices(
-            "health_check_timeout", "HEALTH_CHECK_TIMEOUT"
-        ),
+        validation_alias=AliasChoices("health_check_timeout", "HEALTH_CHECK_TIMEOUT"),
     )
 
     # ---- 进程级客户端租户过滤 --------------------------------------------
@@ -214,9 +209,7 @@ class LogConfig(BaseSettings):
     )
     max_limit: int = Field(
         default=5000,
-        validation_alias=AliasChoices(
-            "max_limit", "LOG_MAX_LIMIT", "LOKI_MAX_LIMIT"
-        ),
+        validation_alias=AliasChoices("max_limit", "LOG_MAX_LIMIT", "LOKI_MAX_LIMIT"),
     )
     default_time_range_minutes: int = Field(
         default=30,
@@ -228,8 +221,39 @@ class LogConfig(BaseSettings):
     )
     timezone: str = Field(
         default="Asia/Shanghai",
+        validation_alias=AliasChoices("timezone", "LOG_TIMEZONE", "LOKI_TIMEZONE"),
+    )
+
+    # ---- 返回体瘦身（query_logs 输出详略程度）----------------------------
+    # query_logs 默认的详略档位：
+    #   * compact —— 只输出日志正文，一行一条，无 Entry 头 / Time / Labels；
+    #     常规排查首选，token 开销最低。
+    #   * normal  —— 正文 + 差异标签 + 短格式时间，公共标签在头部只输出一次。
+    #   * full    —— 保留历史完整格式（Entry 头 + 纳秒 isoformat + 全量标签）。
+    # 单次调用可用 query_logs 的 verbosity 参数覆盖本默认值。
+    default_verbosity: str = Field(
+        default="compact",
+        validation_alias=AliasChoices("default_verbosity", "LOG_DEFAULT_VERBOSITY"),
+    )
+    # compact / normal 模式下单条日志行的最大字符数，超过则截断并追加
+    # 提示（full 模式不截断）。避免个别超长行（堆栈 / base64）撑爆返回体。
+    max_line_chars: int = Field(
+        default=2000,
+        validation_alias=AliasChoices("max_line_chars", "LOG_MAX_LINE_CHARS"),
+    )
+    # compact 模式下是否折叠连续的同模板重复行（≥3 条折叠成一条并标 ×N）。
+    fold_repeats: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("fold_repeats", "LOG_FOLD_REPEATS"),
+    )
+
+    # download_logs 未显式传 fmt 时的默认下载格式。默认 txt（已瘦身：
+    # 公共标签在文件头输出一次、行内只留差异标签），体积最小、最省 token；
+    # 需要结构化后处理（jq / 入库）时在调用处显式传 jsonl / csv。
+    default_download_format: str = Field(
+        default="txt",
         validation_alias=AliasChoices(
-            "timezone", "LOG_TIMEZONE", "LOKI_TIMEZONE"
+            "default_download_format", "LOG_DEFAULT_DOWNLOAD_FORMAT"
         ),
     )
 
@@ -258,9 +282,7 @@ class LogConfig(BaseSettings):
     # 显式设置。
     download_base_url: Optional[str] = Field(
         default=None,
-        validation_alias=AliasChoices(
-            "download_base_url", "LOG_DOWNLOAD_BASE_URL"
-        ),
+        validation_alias=AliasChoices("download_base_url", "LOG_DOWNLOAD_BASE_URL"),
     )
 
     # ---- 数据源优先级 -----------------------------------------------------
@@ -306,11 +328,34 @@ class LogConfig(BaseSettings):
         "max_limit",
         "default_time_range_minutes",
         "download_ttl_seconds",
+        "max_line_chars",
     )
     @classmethod
     def _validate_positive(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("Value must be a positive integer")
+        return v
+
+    @field_validator("default_verbosity")
+    @classmethod
+    def _validate_default_verbosity(cls, v: str) -> str:
+        v = (v or "compact").strip().lower()
+        if v not in ("compact", "normal", "full"):
+            raise ValueError(
+                f"Invalid default_verbosity: {v!r} "
+                "(use 'compact', 'normal' or 'full')"
+            )
+        return v
+
+    @field_validator("default_download_format")
+    @classmethod
+    def _validate_default_download_format(cls, v: str) -> str:
+        v = (v or "txt").strip().lower()
+        if v not in ("txt", "jsonl", "csv"):
+            raise ValueError(
+                f"Invalid default_download_format: {v!r} "
+                "(use 'txt', 'jsonl' or 'csv')"
+            )
         return v
 
     @field_validator("download_base_url")
@@ -322,9 +367,7 @@ class LogConfig(BaseSettings):
         if not v:
             return None
         if not (v.startswith("http://") or v.startswith("https://")):
-            raise ValueError(
-                "download_base_url must start with http:// or https://"
-            )
+            raise ValueError("download_base_url must start with http:// or https://")
         return v.rstrip("/")
 
     @field_validator("connect_timeout", "read_timeout", "write_timeout", "pool_timeout")
@@ -398,9 +441,7 @@ class LogConfig(BaseSettings):
     def _post_init(self) -> "LogConfig":
         if self.bearer_token_file and not self.bearer_token:
             try:
-                token = (
-                    Path(self.bearer_token_file).read_text(encoding="utf-8").strip()
-                )
+                token = Path(self.bearer_token_file).read_text(encoding="utf-8").strip()
                 if token:
                     object.__setattr__(self, "bearer_token", SecretStr(token))
                     logger.info(

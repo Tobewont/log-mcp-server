@@ -412,6 +412,9 @@ Configuration sources (highest priority first):
 | **Generic query** | | |
 | `LOG_DEFAULT_LIMIT` | Default entries per query | `100` |
 | `LOG_MAX_LIMIT` | Hard cap on per-tenant `limit` | `5000` |
+| `LOG_DEFAULT_VERBOSITY` | Default `query_logs` verbosity: `compact` / `normal` / `full` | `compact` |
+| `LOG_MAX_LINE_CHARS` | Max chars per line in `compact`/`normal` before truncation (`full` untouched) | `2000` |
+| `LOG_FOLD_REPEATS` | Fold ≥3 consecutive same-template lines into one with ×N (`compact` only) | `true` |
 | `LOG_DEFAULT_TIME_RANGE_MINUTES` | Default time-window in minutes | `30` |
 | `LOG_TIMEZONE` | Display timezone | `Asia/Shanghai` |
 

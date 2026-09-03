@@ -1,4 +1,5 @@
 """Unit tests for the download token registry."""
+
 from __future__ import annotations
 
 import asyncio
@@ -99,10 +100,7 @@ async def test_concurrent_registers_yield_distinct_tokens(tmp_path: Path):
         f.write_text(str(i))
         files.append(f)
     entries = await asyncio.gather(
-        *[
-            reg.register(path=f, fmt="jsonl", download_filename=f.name)
-            for f in files
-        ]
+        *[reg.register(path=f, fmt="jsonl", download_filename=f.name) for f in files]
     )
     assert len({e.token for e in entries}) == 10
 

@@ -5,6 +5,7 @@
 ``FanoutBackend`` 在派发查询前会先查这个缓存，从而立即跳过不健康
 的集群，避免每次查询都被超时拖慢。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -136,7 +137,7 @@ class HealthCache:
         )
         for b, result in zip(self._backends, results):
             cid = self._cluster_id(b)
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 self._status[cid] = ClusterHealth(
                     cluster_id=cid,
                     healthy=False,
