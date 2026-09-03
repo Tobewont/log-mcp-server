@@ -3,6 +3,7 @@
 Reuses the StubBackend / mock-context machinery from ``test_tools`` to
 keep the harness in one place.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -80,7 +81,7 @@ async def test_stdio_writes_jsonl_and_returns_path(tmp_path: Path):
     tools, cfg, _ = _make_setup(backend, tmp_path)
 
     out = await tools["download_logs"](
-        query='{a="b"}', ctx=_ctx_stdio(), tenant="tenant-a"
+        query='{a="b"}', ctx=_ctx_stdio(), tenant="tenant-a", fmt="jsonl"
     )
     assert "Log Download Ready" in out
     assert "**Format:** `jsonl`" in out
@@ -118,6 +119,21 @@ async def test_stdio_csv_and_txt_formats(tmp_path: Path):
     assert "**Format:** `txt`" in out_txt
     txt_files = list(tmp_path.glob("*.txt"))
     assert len(txt_files) == 1
+
+
+@pytest.mark.asyncio
+async def test_download_defaults_to_txt(tmp_path: Path):
+    # 未显式传 fmt 时应走 LOG_DEFAULT_DOWNLOAD_FORMAT（默认 txt，已瘦身）。
+    backend = StubBackend(
+        ["tenant-a"], entries_by_tenant={"tenant-a": _entries("tenant-a", 2)}
+    )
+    tools, _, _ = _make_setup(backend, tmp_path)
+    out = await tools["download_logs"](
+        query='{a="b"}', ctx=_ctx_stdio(), tenant="tenant-a"
+    )
+    assert "**Format:** `txt`" in out
+    assert len(list(tmp_path.glob("*.txt"))) == 1
+    assert not list(tmp_path.glob("*.jsonl"))
 
 
 # ---------------------------------------------------------------------------
@@ -195,10 +211,9 @@ async def test_http_returns_url_with_explicit_base_url(tmp_path: Path):
         query='{a="b"}',
         ctx=_ctx_http("tenant-a"),
         tenant="tenant-a",
+        fmt="jsonl",
     )
-    assert (
-        "**Download URL:** https://logs-mcp.example.com/mcp/download/" in out
-    )
+    assert "**Download URL:** https://logs-mcp.example.com/mcp/download/" in out
     assert "Link expires in" in out
     # token is registered in the registry
     assert registry is not None
@@ -260,13 +275,9 @@ async def test_http_url_honours_x_forwarded_proto_and_host(tmp_path: Path):
             self.url = _Url()
 
     ctx = _MockContext(request=_ProxiedRequest())
-    out = await tools["download_logs"](
-        query='{a="b"}', ctx=ctx, tenant="tenant-a"
-    )
+    out = await tools["download_logs"](query='{a="b"}', ctx=ctx, tenant="tenant-a")
     # Must use https + the public host, NOT http + the internal one.
-    assert (
-        "**Download URL:** https://logs-mcp.example.com/mcp/download/" in out
-    )
+    assert "**Download URL:** https://logs-mcp.example.com/mcp/download/" in out
     assert "http://10.0.0.5:8000" not in out
 
 
@@ -300,12 +311,8 @@ async def test_http_url_handles_comma_separated_x_forwarded_headers(
             self.url = _Url()
 
     ctx = _MockContext(request=_ChainedRequest())
-    out = await tools["download_logs"](
-        query='{a="b"}', ctx=ctx, tenant="tenant-a"
-    )
-    assert (
-        "**Download URL:** https://logs-mcp.example.com/mcp/download/" in out
-    )
+    out = await tools["download_logs"](query='{a="b"}', ctx=ctx, tenant="tenant-a")
+    assert "**Download URL:** https://logs-mcp.example.com/mcp/download/" in out
 
 
 @pytest.mark.asyncio
@@ -332,9 +339,7 @@ async def test_http_returns_url_inferred_from_request_host(tmp_path: Path):
             self.url = _Url()
 
     ctx = _MockContext(request=_RichRequest())
-    out = await tools["download_logs"](
-        query='{a="b"}', ctx=ctx, tenant="tenant-a"
-    )
+    out = await tools["download_logs"](query='{a="b"}', ctx=ctx, tenant="tenant-a")
     assert "**Download URL:** http://logs.local:9000/mcp/download/" in out
 
 
@@ -357,9 +362,7 @@ async def test_http_url_uses_sse_prefix_when_configured(tmp_path: Path):
         ctx=_ctx_http("tenant-a"),
         tenant="tenant-a",
     )
-    assert (
-        "**Download URL:** https://logs-mcp.example.com/sse/download/" in out
-    )
+    assert "**Download URL:** https://logs-mcp.example.com/sse/download/" in out
 
 
 @pytest.mark.asyncio
@@ -428,9 +431,7 @@ async def test_no_truncation_warning_when_only_total_reaches_limit(tmp_path: Pat
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_all_tenants_fail_returns_failure_report(tmp_path: Path):
-    backend = StubBackend(
-        ["tenant-a"], entries_by_tenant={"tenant-a": []}
-    )
+    backend = StubBackend(["tenant-a"], entries_by_tenant={"tenant-a": []})
     backend.fail_for = {"tenant-a"}
     tools, _, _ = _make_setup(backend, tmp_path)
     out = await tools["download_logs"](

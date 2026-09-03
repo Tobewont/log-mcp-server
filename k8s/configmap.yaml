@@ -40,6 +40,19 @@ data:
   LOG_TIMEZONE: "Asia/Shanghai"
   LOG_LEVEL: "INFO"
 
+  # ---- 返回体瘦身（query_logs 输出详略程度）--------------------------
+  # query_logs 默认详略档位：compact（默认）/ normal / full。
+  #   * compact —— 只输出日志正文，一行一条；token 开销最低。
+  #   * normal  —— 正文 + 短格式时间 + 差异标签，公共标签提到头部。
+  #   * full    —— 历史完整格式（Entry 头 + 纳秒时间 + 全量标签）。
+  LOG_DEFAULT_VERBOSITY: "compact"
+  # compact / normal 单条日志行最大字符数，超过截断（full 不截断）。
+  LOG_MAX_LINE_CHARS: "2000"
+  # compact 模式是否折叠连续同模板重复行（≥3 条折叠为一条并标 ×N）。
+  LOG_FOLD_REPEATS: "true"
+  # download_logs 未显式传 fmt 时的默认格式：txt（已瘦身）/ jsonl / csv。
+  LOG_DEFAULT_DOWNLOAD_FORMAT: "txt"
+
   # ---- MCP 传输 -------------------------------------------------------
   # 推荐使用 streamable-http。
   MCP_TRANSPORT: "streamable-http"

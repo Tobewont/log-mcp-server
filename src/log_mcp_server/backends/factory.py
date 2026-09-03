@@ -4,9 +4,10 @@
 ``LOKI_ADDR`` 可以是用 ``|`` 分隔的多个地址，此时会被透明地封装为
 ``FanoutBackend``，并配套一个 ``HealthCache``。
 """
+
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from ..config import LogConfig
 from ..utils.errors import ConfigError
@@ -30,7 +31,7 @@ def create_backend(config: LogConfig) -> tuple[LogBackend, Optional[HealthCache]
         if len(addrs) == 1:
             return LokiBackend(config, addr=addrs[0]), None
 
-        sub_backends = [LokiBackend(config, addr=a) for a in addrs]
+        sub_backends: List[LogBackend] = [LokiBackend(config, addr=a) for a in addrs]
         cache = HealthCache(
             sub_backends,
             interval=config.health_check_interval,

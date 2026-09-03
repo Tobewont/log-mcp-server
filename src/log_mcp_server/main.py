@@ -10,11 +10,12 @@
 该路由对外提供下载，客户端可以直接把日志拉到自己的机器上，而不用把
 内容塞进 LLM 上下文消耗 token。
 """
+
 from __future__ import annotations
 
 import sys
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Literal, Optional, cast
 
 from mcp.server.fastmcp import FastMCP
 
@@ -87,6 +88,12 @@ def _build_server(
             "tenant owns the target value. "
             "3) Call query_logs(tenant='<id>', query='...') to query only "
             "that tenant. "
+            "To gauge volume before pulling logs, call count_logs first — "
+            "it returns only a hit count (near-zero tokens), so you can "
+            "decide whether to query_logs directly or download_logs to a "
+            "file. query_logs also accepts a 'verbosity' argument "
+            "(compact/normal/full, default compact) to control response "
+            "size; keep it compact for routine triage. "
             "Labels are user-defined (e.g. app, job, env, namespace, etc.). "
             "This avoids slow fan-out across all tenants and yields fast, "
             "precise results. "
@@ -94,7 +101,7 @@ def _build_server(
             "'loki.example.com' or 'loki:3100'), pass it as the optional "
             "'instance' argument so the query is restricted to that single "
             "cluster instead of fanning out. "
-            "IMPORTANT: log-query tools (query_logs, get_labels, "
+            "IMPORTANT: log-query tools (query_logs, count_logs, get_labels, "
             "get_label_values, download_logs) require the MCP client to declare an "
             "explicit tenant subset, either via the X-Allowed-Tenants "
             "request header (HTTP) or the LOKI_CLIENT_TENANTS env var "
@@ -119,7 +126,10 @@ def _build_server(
             "do NOT paste the log contents back into the conversation."
         ),
         debug=is_debug,
-        log_level=config.log_level,
+        log_level=cast(
+            "Literal['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']",
+            config.log_level,
+        ),
         host=config.mcp_host,
         port=config.mcp_port,
         streamable_http_path=streamable_http_path,
@@ -163,7 +173,10 @@ def cli_main() -> None:
         mcp_transport=config.mcp_transport,
         mcp_host=config.mcp_host,
         mcp_port=config.mcp_port,
-        log_level=config.log_level,
+        log_level=cast(
+            "Literal['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']",
+            config.log_level,
+        ),
     )
 
     transport = _select_transport_from_argv(sys.argv) or config.mcp_transport
@@ -199,11 +212,11 @@ def cli_main() -> None:
     try:
         if transport in ("streamable-http", "sse"):
             assert registry is not None
-            _run_http(
-                mcp, config, registry, transport, download_url_path
-            )
+            _run_http(mcp, config, registry, transport, download_url_path)
         else:
-            mcp.run(transport=transport)
+            mcp.run(
+                transport=cast("Literal['stdio', 'sse', 'streamable-http']", transport)
+            )
     except KeyboardInterrupt:
         logger.info("Server interrupted by user")
     except Exception as e:  # noqa: BLE001
@@ -268,9 +281,7 @@ def _run_http(
         0,
         Route(route_path, download_route, methods=["GET"]),
     )
-    logger.info(
-        "Mounted download route", path=route_path, transport=transport
-    )
+    logger.info("Mounted download route", path=route_path, transport=transport)
 
     uvicorn_config = uvicorn.Config(
         app,

@@ -3,10 +3,12 @@
 这些工具把请求委托给当前启用的 ``LogBackend``。它们是 MCP 对外暴露
 的唯一接口，因此尽量保持精简和一致，对 AI 客户端使用更友好。
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 import secrets
 from datetime import datetime
 from datetime import timezone as _tz
@@ -25,7 +27,7 @@ from ..downloads import (
 )
 from ..downloads.writer import build_filename
 from ..utils.errors import LogMCPError, ValidationError
-from ..utils.time_utils import format_in_tz, resolve_time_range
+from ..utils.time_utils import format_in_tz, format_short, resolve_time_range
 
 logger = structlog.get_logger(__name__)
 
@@ -197,8 +199,7 @@ def _resolve_tenants(
                 f"{', '.join(backend.tenants)}."
             )
         raise RuntimeError(
-            f"Unknown tenant {tenant!r}. "
-            f"Allowed tenants: {', '.join(effective)}"
+            f"Unknown tenant {tenant!r}. " f"Allowed tenants: {', '.join(effective)}"
         )
     return [tenant]
 
@@ -262,7 +263,7 @@ def _format_failures(results: List[TenantQueryResult]) -> str:
     for r in results:
         if not r.ok:
             failure_lines.append(f"- `{r.tenant}` (tenant): {r.error}")
-        for cluster_id, err in sorted(r.cluster_errors.items()):
+        for cluster_id, err in sorted((r.cluster_errors or {}).items()):
             failure_lines.append(
                 f"- `{cluster_id}` (cluster, tenant=`{r.tenant}`): {err}"
             )
@@ -274,7 +275,7 @@ def _format_failures(results: List[TenantQueryResult]) -> str:
 def _format_warnings(results: List[TenantQueryResult]) -> str:
     warning_lines: List[str] = []
     for r in results:
-        for cluster_id, warning in sorted(r.cluster_warnings.items()):
+        for cluster_id, warning in sorted((r.cluster_warnings or {}).items()):
             warning_lines.append(
                 f"- `{cluster_id}` (cluster, tenant=`{r.tenant}`): {warning}"
             )
@@ -297,6 +298,169 @@ def _format_log_entries(entries: List[LogEntry], tz: str) -> str:
             f"**Log:** {e.line}\n"
         )
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# 返回体瘦身：公共标签抽取 / 单行截断 / 重复折叠 / compact & normal 渲染
+# ---------------------------------------------------------------------------
+def _label_value_repr(value: object) -> str:
+    """把标签值归一化成可比较、可 hash 的字符串。
+
+    ``| json`` 之后的标签值可能是嵌套 dict（不可 hash），所以统一用
+    ``json.dumps(..., sort_keys=True, ensure_ascii=False)`` 序列化。
+    """
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _split_common_labels(
+    entries: List[LogEntry],
+) -> tuple[Dict[str, str], set[str]]:
+    """把标签拆成 "公共标签" 和 "差异标签 key 集合"。
+
+    在整个结果集内某个 key 只有单一取值时视为公共标签，其余为差异
+    标签。返回 ``(common_labels, differing_keys)``，其中 ``common_labels``
+    的值用归一化后的字符串表示。
+    """
+    if not entries:
+        return {}, set()
+
+    values_by_key: Dict[str, set[str]] = {}
+    seen_repr: Dict[str, str] = {}
+    all_keys: set[str] = set()
+    for e in entries:
+        labels = e.labels or {}
+        for k, v in labels.items():
+            all_keys.add(k)
+            rep = _label_value_repr(v)
+            values_by_key.setdefault(k, set()).add(rep)
+            seen_repr.setdefault(k, rep)
+
+    common: Dict[str, str] = {}
+    differing: set[str] = set()
+    for k in all_keys:
+        vals = values_by_key.get(k, set())
+        # 某个 key 只在部分 entry 出现时也算差异标签（取值不统一）。
+        appears_in_all = all(k in (e.labels or {}) for e in entries)
+        if len(vals) == 1 and appears_in_all:
+            common[k] = seen_repr[k]
+        else:
+            differing.add(k)
+    return common, differing
+
+
+def _differing_labels_str(entry: LogEntry, differing_keys: set[str]) -> str:
+    """渲染单条 entry 的差异标签（仅保留 differing_keys 中的 key）。"""
+    parts = [
+        f"{k}={_label_value_repr(v)}"
+        for k, v in sorted((entry.labels or {}).items())
+        if k in differing_keys
+    ]
+    return ", ".join(parts)
+
+
+def _truncate_line(line: str, max_chars: int) -> str:
+    """超过 max_chars 的单行截断，并追加提示引导用户走 download_logs。"""
+    if max_chars <= 0 or len(line) <= max_chars:
+        return line
+    dropped = len(line) - max_chars
+    return (
+        line[:max_chars] + f"…(+{dropped} chars truncated, full line via download_logs)"
+    )
+
+
+_FOLD_NUM_RE = re.compile(r"\b0x[0-9a-fA-F]+\b|\b[0-9a-fA-F]{16,}\b|\d+")
+
+
+def _fold_template(line: str) -> str:
+    """把行内的数字串、十六进制、长 ID 替换成占位符，用于重复折叠比较。"""
+    return _FOLD_NUM_RE.sub("#", line)
+
+
+def _fold_repeated_lines(lines: List[str]) -> List[str]:
+    """连续 ≥3 条同模板的行折叠成一条并追加 ``×N``。
+
+    仅比较模板（数字 / hex / 长 ID 归一化后），展示时保留该组第一条
+    原始行。少于 3 条的重复保持原样。
+    """
+    if not lines:
+        return []
+    out: List[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        template = _fold_template(lines[i])
+        j = i + 1
+        while j < n and _fold_template(lines[j]) == template:
+            j += 1
+        count = j - i
+        if count >= 3:
+            out.append(f"{lines[i]} ×{count}")
+        else:
+            out.extend(lines[i:j])
+        i = j
+    return out
+
+
+def _origin_tag(entry: LogEntry) -> str:
+    """多租户 / 多集群时的短格式来源标记 ``[tenant@cluster]``。"""
+    tenant = entry.tenant or "-"
+    if entry.cluster:
+        return f"[{tenant}@{entry.cluster}]"
+    return f"[{tenant}]"
+
+
+def _render_compact(
+    entries: List[LogEntry],
+    *,
+    single_origin: bool,
+    max_line_chars: int,
+    fold_repeats: bool,
+) -> str:
+    """compact：只输出日志正文，一行一条，无 Entry 头 / Time / Labels。"""
+    lines: List[str] = []
+    for e in entries:
+        line = _truncate_line(e.line, max_line_chars)
+        if single_origin:
+            lines.append(line)
+        else:
+            lines.append(f"{_origin_tag(e)} {line}")
+    if fold_repeats:
+        lines = _fold_repeated_lines(lines)
+    return "\n".join(lines)
+
+
+def _render_normal(
+    entries: List[LogEntry],
+    tz: str,
+    *,
+    single_origin: bool,
+    differing_keys: set[str],
+    max_line_chars: int,
+) -> str:
+    """normal：短格式时间 + 差异标签 + 正文；公共标签由头部单独输出。"""
+    lines: List[str] = []
+    for e in entries:
+        line = _truncate_line(e.line, max_line_chars)
+        ts = format_short(e.timestamp, tz)
+        diff = _differing_labels_str(e, differing_keys)
+        prefix_parts: List[str] = []
+        if not single_origin:
+            prefix_parts.append(_origin_tag(e))
+        prefix_parts.append(ts)
+        if diff:
+            prefix_parts.append(f"{{{diff}}}")
+        prefix = " ".join(prefix_parts)
+        lines.append(f"{prefix}  {line}")
+    return "\n".join(lines)
+
+
+def _common_labels_str(common: Dict[str, str]) -> str:
+    return ", ".join(f"{k}={v}" for k, v in sorted(common.items()))
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +566,7 @@ def register_tools(mcp: FastMCP) -> None:
         direction: str = "backward",
         tenant: Optional[str] = None,
         instance: Optional[str] = None,
+        verbosity: Optional[str] = None,
     ) -> str:
         """按 LogQL 查询指定租户（或全部可见的租户）的日志。
 
@@ -423,11 +588,30 @@ def register_tools(mcp: FastMCP) -> None:
           tenant    指定租户 ID。省略时查询所有可见租户。
           instance  指定 Loki 实例 ID（可从 health_check 输出查到）。
                     省略时按所有健康实例并发查询。
+          verbosity 返回体详略档位，省略时用服务端默认（LOG_DEFAULT_VERBOSITY，
+                    默认 compact）：
+                      * compact —— 只输出日志正文，一行一条，无 Entry 头 /
+                        Time / Labels / 编号；token 开销最低，常规排查首选。
+                      * normal  —— 正文 + 短格式时间 + 差异标签，公共标签在
+                        头部只输出一次。
+                      * full    —— 历史完整格式（Entry 头 + 纳秒时间 +
+                        全量标签），用于需要逐条精确元数据的场景。
+                    非法取值会报错。若要把大量日志拉到本地分析，请改用
+                    download_logs 而非提高 verbosity。
 
         客户端必须先在 MCP 配置中声明可见租户（X-Allowed-Tenants 或
         LOKI_CLIENT_TENANTS），否则本工具直接拒绝。
         """
         backend, config = _require_state()
+
+        if verbosity is None:
+            verbosity = config.default_verbosity
+        verbosity = verbosity.strip().lower()
+        if verbosity not in ("compact", "normal", "full"):
+            raise RuntimeError(
+                f"Invalid verbosity {verbosity!r}; must be 'compact', "
+                "'normal' or 'full'."
+            )
 
         try:
             start_dt, end_dt = resolve_time_range(
@@ -489,21 +673,65 @@ def register_tools(mcp: FastMCP) -> None:
         successful = [r.tenant for r in results if r.ok]
         failed_tenants = [r for r in results if not r.ok]
         any_cluster_failure = any(r.cluster_errors for r in results)
-
-        header = (
-            f"# Log Query Results\n\n"
-            f"**Backend:** `{backend.name}`\n"
-            f"**Query:** `{query}`\n"
-            f"**Time Range:** "
-            f"`{format_in_tz(start_dt, config.timezone)}` to "
-            f"`{format_in_tz(end_dt, config.timezone)}`\n"
-            f"**Limit:** {effective_limit} per tenant\n"
-            f"**Direction:** {direction}\n"
-            f"**Tenants Queried:** `{', '.join(tenants)}`\n"
-            f"**Successful Tenants:** `{', '.join(successful) or '-'}`\n"
-            f"**Instance:** `{instance or '*all healthy*'}`\n"
-            f"**Total Entries:** {len(all_entries)}\n"
+        truncated = any(
+            r.ok and r.data is not None and len(r.data) >= effective_limit
+            for r in results
         )
+
+        tenant_set = {e.tenant for e in all_entries if e.tenant is not None}
+        cluster_set = {e.cluster for e in all_entries if e.cluster is not None}
+        single_origin = len(tenant_set) <= 1 and len(cluster_set) <= 1
+
+        if verbosity == "full":
+            header = (
+                f"# Log Query Results\n\n"
+                f"**Backend:** `{backend.name}`\n"
+                f"**Query:** `{query}`\n"
+                f"**Time Range:** "
+                f"`{format_in_tz(start_dt, config.timezone)}` to "
+                f"`{format_in_tz(end_dt, config.timezone)}`\n"
+                f"**Limit:** {effective_limit} per tenant\n"
+                f"**Direction:** {direction}\n"
+                f"**Tenants Queried:** `{', '.join(tenants)}`\n"
+                f"**Successful Tenants:** `{', '.join(successful) or '-'}`\n"
+                f"**Instance:** `{instance or '*all healthy*'}`\n"
+                f"**Total Entries:** {len(all_entries)}\n"
+            )
+        else:
+            # compact / normal：头部压到 2~3 行核心信息。Query 截断到
+            # ~120 字符，时间用短格式。
+            query_display = query if len(query) <= 120 else query[:117] + "..."
+            header = (
+                f"# Log Query Results\n\n"
+                f"**Query:** `{query_display}`\n"
+                f"**Time Range:** "
+                f"`{format_short(start_dt, config.timezone)}` to "
+                f"`{format_short(end_dt, config.timezone)}` "
+                f"| dir: {direction} | tenants: "
+                f"`{', '.join(successful) or '-'}` "
+                f"| Total Entries: {len(all_entries)}\n"
+            )
+
+        def _truncation_note() -> str:
+            if not truncated:
+                return ""
+            # backward 时最早覆盖到的时间戳是 all_entries[-1]；空列表兜底。
+            if all_entries:
+                edge = all_entries[-1].timestamp
+                edge_str = format_short(edge, config.timezone)
+                coverage = (
+                    f" Results only cover back to `{edge_str}`."
+                    if direction == "backward"
+                    else f" Results only cover up to `{edge_str}`."
+                )
+            else:
+                coverage = ""
+            return (
+                "\n> ⚠️ Result reached the per-tenant limit "
+                f"({effective_limit}); some entries may have been "
+                "truncated." + coverage + " Narrow the time range or use "
+                "download_logs to capture everything.\n"
+            )
 
         if not all_entries and failed_tenants and not successful:
             return (
@@ -524,11 +752,39 @@ def register_tools(mcp: FastMCP) -> None:
                 )
             return header + tail + note
 
-        body = _format_log_entries(all_entries, config.timezone)
+        common_header = ""
+        trailing = "\n"  # compact / normal body 不以换行结尾，补一个
+        if verbosity == "full":
+            body = _format_log_entries(all_entries, config.timezone)
+            trailing = ""  # 保持与历史逐字节一致
+        elif verbosity == "compact":
+            body = _render_compact(
+                all_entries,
+                single_origin=single_origin,
+                max_line_chars=config.max_line_chars,
+                fold_repeats=config.fold_repeats,
+            )
+        else:  # normal
+            common, differing = _split_common_labels(all_entries)
+            if common:
+                common_header = (
+                    f"**Common Labels:** " f"{{{_common_labels_str(common)}}}\n"
+                )
+            body = _render_normal(
+                all_entries,
+                config.timezone,
+                single_origin=single_origin,
+                differing_keys=differing,
+                max_line_chars=config.max_line_chars,
+            )
+
         return (
             header
+            + common_header
+            + _truncation_note()
             + "\n"
             + body
+            + trailing
             + _format_failures(results)
             + _format_warnings(results)
         )
@@ -609,7 +865,7 @@ def register_tools(mcp: FastMCP) -> None:
         direction: str = "backward",
         tenant: Optional[str] = None,
         instance: Optional[str] = None,
-        fmt: str = "jsonl",
+        fmt: Optional[str] = None,
     ) -> str:
         """按 LogQL 查询日志并写到文件，让用户离线下载到本地分析。
 
@@ -625,19 +881,23 @@ def register_tools(mcp: FastMCP) -> None:
           direction backward（默认，最新在前）或 forward（最早在前）。
           tenant    指定租户 ID。省略时查询所有客户端可见的租户。
           instance  指定 Loki 实例 ID。
-          fmt       输出格式，可选 jsonl（默认）/ csv / txt。
+          fmt       输出格式，可选 txt / jsonl / csv。省略时使用
+                    LOG_DEFAULT_DOWNLOAD_FORMAT（默认 txt，已瘦身：
+                    公共标签在文件头输出一次、行内只留差异标签）。
+                    需要结构化后处理（jq / 入库）时显式传 jsonl / csv。
 
         返回：
           命中 0 条时不生成文件，只返回空结果提示。
           HTTP 模式（streamable-http / sse）：有日志时返回完整下载
-          URL，用户在本机用浏览器或 curl -O 拉取；链接默认 1 小时
-          过期，成功下载后立即失效。
+          URL，用户在本机用浏览器或 curl -O 拉取；链接默认 60 分钟
+          过期，且成功下载一次后立即失效（一次性链接）。
           stdio 模式：有日志时返回服务端绝对路径（即用户本机路径），
           直接打开即可。
         """
         backend, config = _require_state()
         registry = _get_download_registry()
 
+        fmt = fmt if fmt is not None else config.default_download_format
         if fmt not in SUPPORTED_FORMATS:
             raise RuntimeError(
                 f"Unsupported fmt {fmt!r}. Choose one of: "
@@ -738,15 +998,12 @@ def register_tools(mcp: FastMCP) -> None:
             )
 
         # 文件名用 tenant 名；多租户时用 "all"。
-        tenant_label = tenant or (
-            tenants[0] if len(tenants) == 1 else "all"
-        )
+        tenant_label = tenant or (tenants[0] if len(tenants) == 1 else "all")
         try:
             config.download_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             raise RuntimeError(
-                f"Cannot create LOG_DOWNLOAD_DIR "
-                f"{str(config.download_dir)!r}: {e}"
+                f"Cannot create LOG_DOWNLOAD_DIR " f"{str(config.download_dir)!r}: {e}"
             ) from e
 
         now_utc = datetime.now(tz=_tz.utc)
@@ -755,9 +1012,7 @@ def register_tools(mcp: FastMCP) -> None:
         # * ``on_disk_name`` 多加一段随机 hex，避免同一秒内的并发下载
         #   在磁盘上互相覆盖；用户看不到这一段，因为 registry 用前者作
         #   为下载文件名。
-        filename = build_filename(
-            tenant_label=tenant_label, fmt=fmt, now=now_utc
-        )
+        filename = build_filename(tenant_label=tenant_label, fmt=fmt, now=now_utc)
         on_disk_name = build_filename(
             tenant_label=tenant_label,
             fmt=fmt,
@@ -839,7 +1094,94 @@ def register_tools(mcp: FastMCP) -> None:
         )
         return report
 
-    logger.info("All tools registered", tool_count=5)
+    # ----- count_logs ---------------------------------------------------
+    @mcp.tool()
+    async def count_logs(
+        query: str,
+        ctx: Context,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        tenant: Optional[str] = None,
+        instance: Optional[str] = None,
+    ) -> str:
+        """探量：只返回命中日志的条数，不返回日志正文。
+
+        典型用法：在 query_logs / download_logs 之前先探一下量，判断
+        该缩小时间范围、还是直接 query_logs 看、还是走 download_logs
+        拉到本地。只回一个整数，几乎不占用返回体 token。
+
+        参数：
+          query    必填。LogQL 日志选择器（与 query_logs 一致，不含
+                   聚合表达式）。
+          start    起始时间（RFC3339 / ISO 8601）。省略时默认为30分钟前。
+          end      结束时间（RFC3339 / ISO 8601）。省略时默认为当前时间。
+          tenant   指定租户 ID。省略时对所有可见租户分别计数。
+          instance 指定 Loki 实例 ID。省略时按所有健康实例求和。
+
+        客户端必须先声明可见租户（X-Allowed-Tenants 或
+        LOKI_CLIENT_TENANTS），否则本工具直接拒绝。
+        """
+        backend, config = _require_state()
+
+        try:
+            start_dt, end_dt = resolve_time_range(
+                start, end, config.default_time_range_minutes
+            )
+        except ValidationError as e:
+            raise RuntimeError(str(e)) from e
+
+        tenants = _resolve_tenants(backend, config, tenant, ctx)
+
+        logger.info(
+            "Tool: count_logs",
+            tenants=tenants,
+            query=query,
+            start=start_dt.isoformat(),
+            end=end_dt.isoformat(),
+        )
+
+        async def run_for_tenant(
+            t: str,
+            cluster_errors: Dict[str, str],
+            cluster_warnings: Dict[str, str],
+        ) -> int:
+            del cluster_warnings
+            return await backend.count_logs(
+                query=query,
+                tenant=t,
+                start=start_dt,
+                end=end_dt,
+                instance=instance,
+                cluster_errors=cluster_errors,
+            )
+
+        results = await _fan_out(tenants, run_for_tenant)
+        successful = [r.tenant for r in results if r.ok]
+        total = sum(int(r.data) for r in results if r.ok and r.data is not None)
+
+        per_tenant_lines: List[str] = []
+        for r in results:
+            if r.ok:
+                per_tenant_lines.append(f"- `{r.tenant}`: {int(r.data or 0)}")
+            else:
+                per_tenant_lines.append(f"- `{r.tenant}`: _error_")
+
+        query_display = query if len(query) <= 120 else query[:117] + "..."
+        report = (
+            f"# Log Count\n\n"
+            f"**Query:** `{query_display}`\n"
+            f"**Time Range:** "
+            f"`{format_short(start_dt, config.timezone)}` to "
+            f"`{format_short(end_dt, config.timezone)}`\n"
+            f"**Instance:** `{instance or '*all healthy*'}`\n"
+            f"**Successful Tenants:** `{', '.join(successful) or '-'}`\n\n"
+            + "\n".join(per_tenant_lines)
+            + f"\n\n**Total:** {total}\n"
+            + _format_failures(results)
+        )
+        return report
+
+    logger.info("All tools registered", tool_count=6)
 
 
 def _make_download_url(
@@ -877,16 +1219,10 @@ def _make_download_url(
         # ``http://...``（混合内容 / 重定向问题的高发场景）。这两个
         # 请求头不存在时，退化到直接读请求自身的 scheme + Host。
         fwd_proto = request.headers.get("x-forwarded-proto")
-        scheme = (
-            fwd_proto.split(",")[0].strip()
-            if fwd_proto
-            else request.url.scheme  # type: ignore[attr-defined]
-        )
+        scheme = fwd_proto.split(",")[0].strip() if fwd_proto else request.url.scheme
         fwd_host = request.headers.get("x-forwarded-host")
         host = (
-            fwd_host.split(",")[0].strip()
-            if fwd_host
-            else request.headers.get("host")
+            fwd_host.split(",")[0].strip() if fwd_host else request.headers.get("host")
         )
     except Exception:
         return None
@@ -970,23 +1306,54 @@ async def _list_keys(
         )
     parts.append("")
 
+    ok_results = [r for r in results if r.ok]
+    error_results = [r for r in results if not r.ok]
+    multi_tenant = len(tenants) > 1
+
+    # 收集每个 value 出现在哪些租户里，以便多租户时合并去重。
+    tenants_by_value: Dict[str, List[str]] = {}
     unique: set[str] = set()
-    for r in results:
-        parts.append(f"## Tenant: `{r.tenant}`")
-        if not r.ok:
-            parts.append(f"_Error: {r.error}_\n")
-            continue
-        items = r.data or []
-        unique.update(items)
-        if not items:
-            parts.append(
-                "_No values found_\n" if label else "_No labels found_\n"
-            )
-        else:
-            parts.append(f"Found {len(items)} item(s):\n")
-            for i, name in enumerate(items, 1):
-                parts.append(f"{i}. `{name}`")
+    for r in ok_results:
+        for name in r.data or []:
+            unique.add(name)
+            tenants_by_value.setdefault(name, [])
+            if r.tenant not in tenants_by_value[name]:
+                tenants_by_value[name].append(r.tenant)
+
+    if not multi_tenant:
+        # 单租户：保持原来的简洁按租户分节输出。
+        for r in results:
+            parts.append(f"## Tenant: `{r.tenant}`")
+            if not r.ok:
+                parts.append(f"_Error: {r.error}_\n")
+                continue
+            items = r.data or []
+            if not items:
+                parts.append("_No values found_\n" if label else "_No labels found_\n")
+            else:
+                parts.append(f"Found {len(items)} item(s):\n")
+                for i, name in enumerate(items, 1):
+                    parts.append(f"{i}. `{name}`")
+                parts.append("")
+    else:
+        # 多租户：同一 value 只出现一次，附上归属租户列表，避免按租户
+        # 分节重复刷屏。
+        if unique:
+            parts.append(f"Found {len(unique)} unique item(s):\n")
+            for i, name in enumerate(sorted(unique), 1):
+                owners = tenants_by_value.get(name) or []
+                if len(owners) == 1:
+                    parts.append(f"{i}. `{name}` (tenant: {owners[0]})")
+                else:
+                    parts.append(
+                        f"{i}. `{name}` (tenants: {', '.join(sorted(owners))})"
+                    )
             parts.append("")
+        else:
+            parts.append("_No values found_\n" if label else "_No labels found_\n")
+        for r in error_results:
+            parts.append(f"## Tenant: `{r.tenant}`")
+            parts.append(f"_Error: {r.error}_\n")
 
     parts.append(f"**Total Unique:** {len(unique)}")
     cluster_errors_md = _format_failures(results)

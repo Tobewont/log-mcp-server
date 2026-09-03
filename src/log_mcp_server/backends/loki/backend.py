@@ -1,4 +1,5 @@
 """``LogBackend`` 的 Loki 实现。"""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -69,9 +70,7 @@ class LokiBackend(LogBackend):
             "server_addr": self.addr,
         }
         try:
-            info = await self.http.get(
-                "/loki/api/v1/status/buildinfo", retries=1
-            )
+            info = await self.http.get("/loki/api/v1/status/buildinfo", retries=1)
             cluster["status"] = "healthy"
             cluster["version"] = info.get("version", "unknown")
         except Exception as e:
@@ -256,3 +255,58 @@ class LokiBackend(LogBackend):
                 f"Failed to list label values: {response.get('error') or response}"
             )
         return list(response.get("data") or [])
+
+    async def count_logs(
+        self,
+        query: str,
+        tenant: str,
+        start: datetime,
+        end: datetime,
+        instance: Optional[str] = None,
+        cluster_errors: Optional[Dict[str, str]] = None,
+    ) -> int:
+        # 单集群后端：忽略 cluster_errors，出错直接抛出。
+        del cluster_errors
+        self._check_instance(instance)
+        validate_tenant(tenant)
+        if not query or not query.strip():
+            raise ValidationError("Query cannot be empty")
+
+        # 用户传入的是日志选择器（不含聚合），这里包一层
+        # sum(count_over_time(<selector>[<range>])) 做即时计数查询。
+        # range 用 start~end 的秒数（至少 1s），保证覆盖整个窗口。
+        span_seconds = max(1, int((end - start).total_seconds()))
+        count_expr = f"sum(count_over_time({query.strip()}[{span_seconds}s]))"
+        params = {
+            "query": count_expr,
+            "time": str(to_unix_ns(end)),
+        }
+        response = await self.http.get(
+            "/loki/api/v1/query",
+            params=params,
+            tenant=tenant,
+        )
+        if response.get("status") != "success":
+            raise BackendQueryError(
+                f"Loki count query failed: {response.get('error') or response}"
+            )
+
+        data = response.get("data", {})
+        result_type = data.get("resultType", "")
+        if result_type != "vector":
+            raise BackendQueryError(
+                f"Loki count query returned unexpected resultType "
+                f"{result_type!r}; expected 'vector'."
+            )
+        results = data.get("result") or []
+        if not results:
+            return 0
+        total = 0
+        for sample in results:
+            value = sample.get("value") or []
+            if len(value) >= 2:
+                try:
+                    total += int(float(value[1]))
+                except (TypeError, ValueError):
+                    continue
+        return total

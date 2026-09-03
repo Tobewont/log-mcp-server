@@ -1,4 +1,5 @@
 """Unit tests for the tenant-list parsing helper."""
+
 from __future__ import annotations
 
 import pytest

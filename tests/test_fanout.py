@@ -1,4 +1,5 @@
 """Tests for the FanoutBackend."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -99,6 +100,20 @@ class StubBackend(LogBackend):
             raise RuntimeError(f"{self.cluster_id} label values failure")
         return list(self._values)
 
+    async def count_logs(
+        self,
+        query,
+        tenant,
+        start,
+        end,
+        instance=None,
+        cluster_errors=None,
+    ):
+        del instance
+        if self.fail:
+            raise RuntimeError(f"{self.cluster_id} count failure")
+        return len(self._entries)
+
 
 class LimitCappedBackend(StubBackend):
     """Stub that mimics Loki's per-cluster max_entries_limit_per_query."""
@@ -197,7 +212,7 @@ async def test_query_merge_sort_backward():
     )
     fan = FanoutBackend([a, b])
     out = await fan.query_logs(
-        query="{a=\"b\"}",
+        query='{a="b"}',
         tenant="t1",
         start=t0 - timedelta(hours=1),
         end=t0 + timedelta(hours=1),
@@ -217,7 +232,7 @@ async def test_query_merge_sort_forward():
     b = StubBackend("b", entries=[_entry(t0 + timedelta(minutes=1), "new-b")])
     fan = FanoutBackend([a, b])
     out = await fan.query_logs(
-        query="{x=\"y\"}",
+        query='{x="y"}',
         tenant="t1",
         start=t0 - timedelta(hours=1),
         end=t0 + timedelta(hours=1),
@@ -240,7 +255,7 @@ async def test_query_global_limit_truncates():
     )
     fan = FanoutBackend([a, b])
     out = await fan.query_logs(
-        query="{a=\"b\"}",
+        query='{a="b"}',
         tenant="t1",
         start=t0,
         end=t0 + timedelta(hours=1),
@@ -260,7 +275,7 @@ async def test_query_partial_failure_continues():
     b.fail = True
     fan = FanoutBackend([a, b])
     out = await fan.query_logs(
-        query="{a=\"b\"}",
+        query='{a="b"}',
         tenant="t1",
         start=t0 - timedelta(hours=1),
         end=t0 + timedelta(hours=1),
@@ -288,7 +303,7 @@ async def test_query_retries_loki_limit_without_lowering_global_limit():
     warnings: dict[str, str] = {}
 
     out = await fan.query_logs(
-        query="{app=\"demo\"}",
+        query='{app="demo"}',
         tenant="t1",
         start=t0 - timedelta(hours=1),
         end=t0 + timedelta(hours=1),
@@ -315,7 +330,7 @@ async def test_query_does_not_retry_loki_limit_when_instance_is_explicit():
     errors: dict[str, str] = {}
 
     out = await fan.query_logs(
-        query="{app=\"demo\"}",
+        query='{app="demo"}',
         tenant="t1",
         start=t0 - timedelta(hours=1),
         end=t0 + timedelta(hours=1),
@@ -364,7 +379,7 @@ async def test_query_records_cluster_errors():
     fan = FanoutBackend([a, b])
     errors: dict[str, str] = {}
     out = await fan.query_logs(
-        query="{a=\"b\"}",
+        query='{a="b"}',
         tenant="t1",
         start=t0 - timedelta(hours=1),
         end=t0 + timedelta(hours=1),
@@ -441,7 +456,7 @@ async def test_fanout_skips_unhealthy_clusters_for_query():
     try:
         fan = FanoutBackend([a, b], health_cache=cache)
         out = await fan.query_logs(
-            query="{a=\"b\"}",
+            query='{a="b"}',
             tenant="t1",
             start=t0 - timedelta(hours=1),
             end=t0 + timedelta(hours=1),
@@ -461,7 +476,7 @@ async def test_fanout_instance_restricts_to_single_cluster():
     b = StubBackend("b", entries=[_entry(t0, "b-line")])
     fan = FanoutBackend([a, b])
     out = await fan.query_logs(
-        query="{x=\"y\"}",
+        query='{x="y"}',
         tenant="t1",
         start=t0 - timedelta(hours=1),
         end=t0 + timedelta(hours=1),
@@ -517,3 +532,37 @@ async def test_fanout_health_check_probes_all_clusters():
         assert len(info["clusters"]) == 2
     finally:
         await cache.stop()
+
+
+@pytest.mark.asyncio
+async def test_count_logs_sums_across_clusters():
+    t0 = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    a = StubBackend("a", entries=[_entry(t0, "a0"), _entry(t0, "a1")])
+    b = StubBackend("b", entries=[_entry(t0, "b0")])
+    fan = FanoutBackend([a, b])
+    total = await fan.count_logs(
+        query='{a="b"}',
+        tenant="t1",
+        start=t0 - timedelta(hours=1),
+        end=t0 + timedelta(hours=1),
+    )
+    assert total == 3
+
+
+@pytest.mark.asyncio
+async def test_count_logs_isolates_cluster_failure():
+    t0 = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    a = StubBackend("a", entries=[_entry(t0, "a0")])
+    b = StubBackend("b", entries=[_entry(t0, "b0"), _entry(t0, "b1")])
+    a.fail = True
+    fan = FanoutBackend([a, b])
+    cluster_errors: dict = {}
+    total = await fan.count_logs(
+        query='{a="b"}',
+        tenant="t1",
+        start=t0 - timedelta(hours=1),
+        end=t0 + timedelta(hours=1),
+        cluster_errors=cluster_errors,
+    )
+    assert total == 2
+    assert "a" in cluster_errors

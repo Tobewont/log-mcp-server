@@ -12,7 +12,7 @@
 - **多 Loki 扇出查询**：`LOKI_ADDR=url1|url2|url3` 即可像 Thanos 之于 Prometheus 一样，把多个 Loki 实例聚合查询
 - **多租户并发**：每个 (cluster, tenant) 独立超时，部分失败也会显式上报
 - **传输模式齐全**：`stdio` / `sse` / `streamable-http`（**推荐**最新模式）
-- **简洁的工具**：4 个 backend-agnostic 工具，AI 直接可用
+- **简洁的工具**：6 个 backend-agnostic 工具，AI 直接可用
 - **时区一致**：内部全部 tz-aware UTC，输出统一按配置时区（默认 `Asia/Shanghai`）
 - **单连接池长生命周期**，避免每次调用重建 HTTP 连接
 
@@ -51,7 +51,7 @@ uv run log-mcp-server
 
 ## 可用工具
 
-> 设计原则：**非必要不增加**。下列 5 个工具足以覆盖 AI 助手的日志查询下载、标签发现和健康检查全部主流场景。
+> 设计原则：**非必要不增加**。下列 6 个工具足以覆盖 AI 助手的日志查询下载、标签发现和健康检查全部主流场景。
 
 ### 推荐工作流（多租户场景）
 
@@ -78,8 +78,11 @@ uv run log-mcp-server
 | `direction` | ❌ | `backward`（默认，最新在前）或 `forward` |
 | `tenant` | ❌ | 指定租户 ID。**推荐在多租户场景下使用**，避免不必要的全租户扇出 |
 | `instance` | ❌ | 指定 Loki 实例（cluster id，例如 `loki-bj:3100` 或 `loki.example.com`，从 `health_check` 输出可见）。指定后**只查该实例**，绕过多 Loki 扇出 |
+| `verbosity` | ❌ | 返回体详略档位：`compact`（默认，只输出正文一行一条，token 最省）/ `normal`（正文 + 短格式时间 + 差异标签，公共标签提到头部）/ `full`（历史完整格式：Entry 头 + 纳秒时间 + 全量标签）。省略时用 `LOG_DEFAULT_VERBOSITY` |
 
-返回 Markdown 报告：每条日志带 `Tenant` 和 `Cluster`（多 Loki 时）；文末 `Errors` 区列出每个失败的 tenant 和 cluster 错误（多 Loki 部分失败时）。
+返回 Markdown 报告：`compact`/`normal` 精简头部并把公共标签上提，正文一行一条；触及每租户 `limit` 时会额外提示可能被截断并给出已覆盖到的最早时间戳；`full` 保留历史逐条格式。文末 `Errors` 区列出每个失败的 tenant 和 cluster 错误（多 Loki 部分失败时）。
+
+> **返回体瘦身**：`compact` 是新默认档位，去掉了重复的 Entry 头 / 全量标签 / 纳秒时间戳，并对连续同模板行做 `×N` 折叠、对超长单行截断（见 `LOG_MAX_LINE_CHARS` / `LOG_FOLD_REPEATS`）。要把大量日志拉到本地分析，用 `download_logs` 而不是提高 `verbosity`。
 
 ### 🏷️ `get_labels`
 
@@ -104,6 +107,19 @@ uv run log-mcp-server
 | `tenant` | ❌ | 指定租户 ID，省略则查询**所有客户端可见的租户** |
 | `instance` | ❌ | 指定 Loki 实例（cluster id），多 Loki 时只查该实例 |
 
+### 🔢 `count_logs`
+
+**探量**：只返回命中日志的条数（一个整数），几乎不占用返回体 token。适合在 `query_logs` / `download_logs` 之前先判断数据量，再决定缩小时间窗、直接查看还是下载到本地。
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `query` | ✅ | LogQL 日志选择器，与 `query_logs` 一致（不含聚合表达式） |
+| `start` / `end` | ❌ | 时间范围，同 `query_logs` |
+| `tenant` | ❌ | 指定租户；省略则对所有可见租户分别计数 |
+| `instance` | ❌ | 指定 Loki 实例；省略则对所有健康实例求和 |
+
+底层走 Loki 即时查询 `sum(count_over_time(<selector>[<range>]))`；多 Loki 扇出时对各集群求和。返回每租户命中数与总数。同样要求客户端先声明 `X-Allowed-Tenants` / `LOKI_CLIENT_TENANTS`。
+
 ### ❤️ `health_check`
 
 检查后端健康状态。多 Loki 时按 cluster 列出每个实例的状态（healthy / unhealthy）和 Loki 版本。同时输出当前会话生效的 `Allowed Tenants` 与过滤来源（见下节）。无参数。
@@ -119,7 +135,7 @@ uv run log-mcp-server
 | `limit` | ❌ | **每个 tenant 上限**，默认 `LOG_MAX_LIMIT`；不得超过它 |
 | `direction` | ❌ | `backward` / `forward` |
 | `tenant` / `instance` | ❌ | 与 `query_logs` 同；同样要求客户端先声明 `X-Allowed-Tenants` / `LOKI_CLIENT_TENANTS` |
-| `fmt` | ❌ | `jsonl`（默认）/ `csv` / `txt` |
+| `fmt` | ❌ | `txt`（默认，已瘦身）/ `jsonl` / `csv`；省略时用 `LOG_DEFAULT_DOWNLOAD_FORMAT` |
 
 **两种部署模式下的"下载到本地"是不同的实现路径**：
 
@@ -429,6 +445,9 @@ kubectl -n log-mcp port-forward svc/log-mcp-server 8000:8000
 | **通用查询设置** | | |
 | `LOG_DEFAULT_LIMIT` | 默认结果条数 | `100` |
 | `LOG_MAX_LIMIT` | 单租户 `limit` 最大值 | `5000` |
+| `LOG_DEFAULT_VERBOSITY` | `query_logs` 默认详略档位：`compact` / `normal` / `full` | `compact` |
+| `LOG_MAX_LINE_CHARS` | `compact`/`normal` 单条日志行最大字符数，超过截断（`full` 不截断） | `2000` |
+| `LOG_FOLD_REPEATS` | `compact` 模式是否折叠连续同模板重复行（≥3 条折叠为一条并标 ×N） | `true` |
 | `LOG_DEFAULT_TIME_RANGE_MINUTES` | 默认时间范围（分钟） | `30` |
 | `LOG_TIMEZONE` | 显示时区 | `Asia/Shanghai` |
 
@@ -479,7 +498,7 @@ src/log_mcp_server/
 │       ├── http_client.py        # 长生命周期 httpx.AsyncClient
 │       └── auth.py               # 唯一的认证头构造
 ├── tools/
-│   └── log_tools.py              # 4 个 backend-agnostic 工具
+│   └── log_tools.py              # 6 个 backend-agnostic 工具
 └── utils/
     ├── errors.py
     ├── logging.py                # 单次配置 structlog（输出到 stderr）

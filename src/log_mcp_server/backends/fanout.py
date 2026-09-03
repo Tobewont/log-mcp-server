@@ -7,6 +7,7 @@
 ``get_labels`` / ``get_label_values``）只会下发到被标记为健康的
 集群；``health_check`` 方法仍然探测全部集群。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -119,7 +120,7 @@ class FanoutBackend(LogBackend):
             raise TimeoutError(f"timeout after {_PER_CLUSTER_TIMEOUT:.0f}s") from e
 
     @staticmethod
-    def _loki_limit_cap(exc: Exception, requested_limit: int) -> Optional[int]:
+    def _loki_limit_cap(exc: BaseException, requested_limit: int) -> Optional[int]:
         """Extract Loki's per-cluster max_entries_limit_per_query cap.
 
         Loki returns messages like:
@@ -150,7 +151,7 @@ class FanoutBackend(LogBackend):
         """
         retry_jobs: List[tuple[int, LogBackend, int]] = []
         for idx, (backend, res) in enumerate(zip(active, results)):
-            if not isinstance(res, Exception):
+            if not isinstance(res, BaseException):
                 continue
             cap = self._loki_limit_cap(res, limit)
             if cap is None:
@@ -170,7 +171,7 @@ class FanoutBackend(LogBackend):
         updated = list(results)
         for (idx, backend, cap), res in zip(retry_jobs, retried):
             cid = self._cluster_id(backend)
-            if isinstance(res, Exception):
+            if isinstance(res, BaseException):
                 logger.warning(
                     "Cluster retry after Loki limit cap failed",
                     cluster=cid,
@@ -206,7 +207,7 @@ class FanoutBackend(LogBackend):
     ) -> None:
         """Log per-cluster failures and record them into ``cluster_errors``."""
         for backend, res in zip(active, results):
-            if not isinstance(res, Exception):
+            if not isinstance(res, BaseException):
                 continue
             cid = self._cluster_id(backend)
             err = f"{type(res).__name__}: {res}"
@@ -235,10 +236,8 @@ class FanoutBackend(LogBackend):
 
         for backend, info in zip(self._backends, results):
             cid = self._cluster_id(backend)
-            if isinstance(info, Exception):
-                clusters.append(
-                    {"id": cid, "status": "unhealthy", "error": str(info)}
-                )
+            if isinstance(info, BaseException):
+                clusters.append({"id": cid, "status": "unhealthy", "error": str(info)})
                 any_unhealthy = True
                 continue
             timezone = timezone or info.get("timezone")
@@ -247,9 +246,7 @@ class FanoutBackend(LogBackend):
             if sub:
                 clusters.extend(sub)
             else:
-                clusters.append(
-                    {"id": cid, "status": info.get("status", "unknown")}
-                )
+                clusters.append({"id": cid, "status": info.get("status", "unknown")})
             sub_status = info.get("status")
             if sub_status == "healthy":
                 any_healthy = True
@@ -323,7 +320,7 @@ class FanoutBackend(LogBackend):
 
         merged: List[LogEntry] = []
         for backend, res in zip(active, results):
-            if isinstance(res, Exception):
+            if isinstance(res, BaseException):
                 continue
             cid = self._cluster_id(backend)
             for entry in res:
@@ -360,7 +357,7 @@ class FanoutBackend(LogBackend):
 
         seen: set[str] = set()
         for res in results:
-            if isinstance(res, Exception):
+            if isinstance(res, BaseException):
                 continue
             seen.update(res or [])
         return sorted(seen)
@@ -377,9 +374,7 @@ class FanoutBackend(LogBackend):
         active = self._resolve_instance(self._active_backends(), instance)
 
         async def call(backend: LogBackend):
-            return await backend.get_label_values(
-                tenant, label, start=start, end=end
-            )
+            return await backend.get_label_values(tenant, label, start=start, end=end)
 
         results = await asyncio.gather(
             *(self._run(b, call) for b in active),
@@ -396,7 +391,41 @@ class FanoutBackend(LogBackend):
 
         seen: set[str] = set()
         for res in results:
-            if isinstance(res, Exception):
+            if isinstance(res, BaseException):
                 continue
             seen.update(res or [])
         return sorted(seen)
+
+    async def count_logs(
+        self,
+        query: str,
+        tenant: str,
+        start: datetime,
+        end: datetime,
+        instance: Optional[str] = None,
+        cluster_errors: Optional[Dict[str, str]] = None,
+    ) -> int:
+        active = self._resolve_instance(self._active_backends(), instance)
+
+        async def call(backend: LogBackend):
+            return await backend.count_logs(
+                query=query,
+                tenant=tenant,
+                start=start,
+                end=end,
+            )
+
+        results = await asyncio.gather(
+            *(self._run(b, call) for b in active),
+            return_exceptions=True,
+        )
+        self._record_failures(
+            active, results, cluster_errors, op="count_logs", tenant=tenant
+        )
+
+        total = 0
+        for res in results:
+            if isinstance(res, BaseException):
+                continue
+            total += int(res)
+        return total

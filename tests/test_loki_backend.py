@@ -1,4 +1,5 @@
 """Tests for the Loki backend."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -75,7 +76,7 @@ class TestQueryLogs:
     async def test_invalid_direction_rejected(self, backend: LokiBackend):
         with pytest.raises(ValidationError):
             await backend.query_logs(
-                query="{a=\"b\"}",
+                query='{a="b"}',
                 tenant="tenant-a",
                 start=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 end=datetime(2025, 1, 1, tzinfo=timezone.utc),
@@ -87,7 +88,7 @@ class TestQueryLogs:
     async def test_limit_exceeds_max_rejected(self, backend: LokiBackend):
         with pytest.raises(ValidationError, match="exceeds maximum"):
             await backend.query_logs(
-                query="{a=\"b\"}",
+                query='{a="b"}',
                 tenant="tenant-a",
                 start=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 end=datetime(2025, 1, 1, tzinfo=timezone.utc),
@@ -131,9 +132,7 @@ class TestQueryLogs:
 
 class TestLabels:
     @pytest.mark.asyncio
-    async def test_get_labels(
-        self, backend: LokiBackend, sample_labels_response: Any
-    ):
+    async def test_get_labels(self, backend: LokiBackend, sample_labels_response: Any):
         backend.http.get = AsyncMock(return_value=sample_labels_response)  # type: ignore[method-assign]
         labels = await backend.get_labels("tenant-a")
         assert labels == ["job", "level", "instance"]
@@ -248,3 +247,79 @@ class TestHealth:
         clusters = info["clusters"]
         assert len(clusters) == 1
         assert "boom" in clusters[0]["error"]
+
+
+class TestCountLogs:
+    @pytest.mark.asyncio
+    async def test_count_parses_vector(self, backend: LokiBackend):
+        backend.http.get = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "status": "success",
+                "data": {
+                    "resultType": "vector",
+                    "result": [
+                        {"metric": {}, "value": [1700000000, "42"]},
+                    ],
+                },
+            }
+        )
+        n = await backend.count_logs(
+            query='{job="app"}',
+            tenant="tenant-a",
+            start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2024, 1, 1, 0, 15, tzinfo=timezone.utc),
+        )
+        assert n == 42
+        call = backend.http.get.await_args
+        assert call.args[0] == "/loki/api/v1/query"
+        params = call.kwargs["params"]
+        assert "count_over_time" in params["query"]
+        assert "sum(" in params["query"]
+
+    @pytest.mark.asyncio
+    async def test_count_empty_vector_returns_zero(self, backend: LokiBackend):
+        backend.http.get = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "status": "success",
+                "data": {"resultType": "vector", "result": []},
+            }
+        )
+        n = await backend.count_logs(
+            query='{job="app"}',
+            tenant="tenant-a",
+            start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2024, 1, 1, 0, 15, tzinfo=timezone.utc),
+        )
+        assert n == 0
+
+    @pytest.mark.asyncio
+    async def test_count_sums_multiple_samples(self, backend: LokiBackend):
+        backend.http.get = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "status": "success",
+                "data": {
+                    "resultType": "vector",
+                    "result": [
+                        {"metric": {"a": "1"}, "value": [1, "3"]},
+                        {"metric": {"a": "2"}, "value": [1, "7"]},
+                    ],
+                },
+            }
+        )
+        n = await backend.count_logs(
+            query='{job="app"}',
+            tenant="tenant-a",
+            start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2024, 1, 1, 0, 15, tzinfo=timezone.utc),
+        )
+        assert n == 10
+
+    @pytest.mark.asyncio
+    async def test_count_empty_query_rejected(self, backend: LokiBackend):
+        with pytest.raises(ValidationError):
+            await backend.count_logs(
+                query="",
+                tenant="tenant-a",
+                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end=datetime(2024, 1, 1, 0, 15, tzinfo=timezone.utc),
+            )

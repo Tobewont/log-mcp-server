@@ -3,6 +3,7 @@
 首次 import 时初始化一次，后续调用是 no-op，因此多个模块都调用
 ``setup_logging`` 也是安全的。
 """
+
 from __future__ import annotations
 
 import logging
@@ -52,4 +53,5 @@ def setup_logging(name: str = "log_mcp_server") -> structlog.BoundLogger:
         )
         _INITIALISED = True
 
-    return structlog.get_logger(name)
+    logger: structlog.BoundLogger = structlog.get_logger(name)
+    return logger

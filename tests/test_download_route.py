@@ -6,6 +6,7 @@ Bypasses uvicorn / sockets by talking to the route via Starlette's
 download URL handed back to the user 404'd because the route was
 mounted under a path that the surrounding ingress did not forward.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -60,9 +61,7 @@ async def test_serves_registered_file_with_correct_headers(tmp_path: Path):
     # Use binary write to keep newline bytes deterministic across
     # platforms — Windows otherwise inserts \r\n via write_text().
     f.write_bytes(b'{"line":"hello"}\n')
-    entry = await reg.register(
-        path=f, fmt="jsonl", download_filename="ok.jsonl"
-    )
+    entry = await reg.register(path=f, fmt="jsonl", download_filename="ok.jsonl")
 
     app = _build_app(reg, "/mcp/download")
     with TestClient(app) as client:
@@ -78,9 +77,7 @@ async def test_successful_download_consumes_token_and_file(tmp_path: Path):
     reg = DownloadRegistry(ttl_seconds=60)
     f = tmp_path / "once.jsonl"
     f.write_bytes(b'{"line":"once"}\n')
-    entry = await reg.register(
-        path=f, fmt="jsonl", download_filename="once.jsonl"
-    )
+    entry = await reg.register(path=f, fmt="jsonl", download_filename="once.jsonl")
 
     app = _build_app(reg, "/mcp/download")
     with TestClient(app) as client:
@@ -128,9 +125,7 @@ async def test_file_missing_on_disk_returns_410_and_drops_token(tmp_path: Path):
     reg = DownloadRegistry(ttl_seconds=60)
     f = tmp_path / "vanish.jsonl"
     f.write_text("x", encoding="utf-8")
-    entry = await reg.register(
-        path=f, fmt="jsonl", download_filename="vanish.jsonl"
-    )
+    entry = await reg.register(path=f, fmt="jsonl", download_filename="vanish.jsonl")
     f.unlink()
     app = _build_app(reg, "/mcp/download")
     with TestClient(app) as client:
@@ -149,9 +144,7 @@ async def test_works_with_sse_mount_path(tmp_path: Path):
     reg = DownloadRegistry(ttl_seconds=60)
     f = tmp_path / "sse.jsonl"
     f.write_text("x", encoding="utf-8")
-    entry = await reg.register(
-        path=f, fmt="jsonl", download_filename="sse.jsonl"
-    )
+    entry = await reg.register(path=f, fmt="jsonl", download_filename="sse.jsonl")
     app = _build_app(reg, "/sse/download")
     with TestClient(app) as client:
         r = client.get(f"/sse/download/{entry.token}")

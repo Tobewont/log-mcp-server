@@ -1,4 +1,5 @@
 """Tests for LogConfig."""
+
 from __future__ import annotations
 
 import pytest
@@ -226,3 +227,24 @@ class TestTenantList:
     def test_empty_falls_back_to_fake(self):
         cfg = LogConfig(tenants="|||")
         assert cfg.get_tenant_list() == ["fake"]
+
+
+def test_default_verbosity_defaults_to_compact():
+    from log_mcp_server.config import LogConfig
+
+    cfg = LogConfig(addr="http://loki.test:3100", tenants="a")
+    assert cfg.default_verbosity == "compact"
+    assert cfg.max_line_chars == 2000
+    assert cfg.fold_repeats is True
+
+
+def test_default_verbosity_normalised_and_validated():
+    cfg = LogConfig(addr="http://loki.test:3100", tenants="a", default_verbosity="FULL")
+    assert cfg.default_verbosity == "full"
+    with pytest.raises(Exception):
+        LogConfig(addr="http://loki.test:3100", tenants="a", default_verbosity="loud")
+
+
+def test_max_line_chars_must_be_positive():
+    with pytest.raises(Exception):
+        LogConfig(addr="http://loki.test:3100", tenants="a", max_line_chars=0)

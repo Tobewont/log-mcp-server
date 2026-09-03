@@ -3,6 +3,7 @@
 服务内部统一使用带时区信息的 UTC ``datetime``，避免 naive 与 aware
 混用导致的 bug。仅在面向用户输出时才转换到配置的展示时区。
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -83,6 +84,19 @@ def format_in_tz(dt: datetime, tz_name: str) -> str:
     return dt.astimezone(tz).isoformat()
 
 
+def format_short(dt: datetime, tz_name: str) -> str:
+    """Format a tz-aware datetime as a compact ``MM-DD HH:MM:SS`` string.
+
+    面向 compact / normal 返回体：省掉年份、纳秒和时区偏移，只保留
+    人排查日志时真正需要的月-日 时:分:秒。底层始终是带时区的 UTC，
+    这里转换到展示时区后再截断。
+    """
+    if dt.tzinfo is None:
+        raise ValidationError("Datetime must be timezone-aware")
+    tz = get_timezone(tz_name)
+    return dt.astimezone(tz).strftime("%m-%d %H:%M:%S")
+
+
 def resolve_time_range(
     start: Optional[str],
     end: Optional[str],
@@ -99,9 +113,7 @@ def resolve_time_range(
     """
     end_dt = parse_user_time(end) if end else now_utc()
     start_dt = (
-        parse_user_time(start)
-        if start
-        else end_dt - timedelta(minutes=default_minutes)
+        parse_user_time(start) if start else end_dt - timedelta(minutes=default_minutes)
     )
 
     if start_dt >= end_dt:
