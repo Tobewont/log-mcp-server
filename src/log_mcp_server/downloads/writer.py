@@ -20,6 +20,7 @@
 规模（≤ ``LOG_MAX_LIMIT`` 条）来说，短暂阻塞事件循环写文件是可
 接受的。
 """
+
 from __future__ import annotations
 
 import csv
@@ -151,8 +152,6 @@ def _maybe_parse_json(line: str):
 
     返回值：解析出的对象/数组，或原始字符串。
     """
-    if not isinstance(line, str):
-        return line
     s = line.strip()
     if not s or s[0] not in "{[":
         return line
@@ -165,9 +164,7 @@ def _maybe_parse_json(line: str):
     return line
 
 
-def _write_jsonl(
-    entries: List[LogEntry], path: Path, timezone: str
-) -> None:
+def _write_jsonl(entries: List[LogEntry], path: Path, timezone: str) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as f:
         for e in entries:
             row = {
@@ -181,9 +178,7 @@ def _write_jsonl(
             f.write("\n")
 
 
-def _write_csv(
-    entries: List[LogEntry], path: Path, timezone: str
-) -> None:
+def _write_csv(entries: List[LogEntry], path: Path, timezone: str) -> None:
     with path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
         writer.writerow(["time", "tenant", "cluster", "labels", "line"])
@@ -199,18 +194,65 @@ def _write_csv(
             )
 
 
-def _write_txt(
-    entries: List[LogEntry], path: Path, timezone: str
-) -> None:
+def _write_txt(entries: List[LogEntry], path: Path, timezone: str) -> None:
+    # 返回体瘦身：在文件头部把 "整份文件内单一取值" 的标签作为公共
+    # 标签注释输出一次，行内只保留差异标签；单租户单集群时行内去掉
+    # tenant/cluster 前缀。空文件仍写成 0 字节，保持可预测。
+    common, differing = _txt_split_common_labels(entries)
+    tenant_set = {e.tenant for e in entries if e.tenant is not None}
+    cluster_set = {e.cluster for e in entries if e.cluster is not None}
+    single_origin = len(tenant_set) <= 1 and len(cluster_set) <= 1
+
     with path.open("w", encoding="utf-8", newline="\n") as f:
+        if common:
+            common_str = ", ".join(f"{k}={v}" for k, v in sorted(common.items()))
+            f.write(f"# common labels: {{{common_str}}}\n")
         for e in entries:
-            label_str = ", ".join(
-                f"{k}={v}" for k, v in sorted(e.labels.items())
+            diff_str = ", ".join(
+                f"{k}={_txt_label_repr(v)}"
+                for k, v in sorted((e.labels or {}).items())
+                if k in differing
             )
-            origin = e.tenant or "-"
-            if e.cluster:
-                origin = f"{origin}/{e.cluster}"
-            f.write(
-                f"[{format_in_tz(e.timestamp, timezone)}] "
-                f"{origin} {{{label_str}}} {e.line}\n"
-            )
+            prefix = f"[{format_in_tz(e.timestamp, timezone)}]"
+            if not single_origin:
+                origin = e.tenant or "-"
+                if e.cluster:
+                    origin = f"{origin}/{e.cluster}"
+                prefix = f"{prefix} {origin}"
+            f.write(f"{prefix} {{{diff_str}}} {e.line}\n")
+
+
+def _txt_label_repr(value: object) -> str:
+    """把标签值归一化成字符串（嵌套 dict 用 JSON 序列化）。"""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _txt_split_common_labels(
+    entries: List[LogEntry],
+) -> tuple[dict, set]:
+    """把标签拆成公共标签（全体单一取值）和差异标签 key 集合。"""
+    if not entries:
+        return {}, set()
+    values_by_key: dict = {}
+    first_repr: dict = {}
+    all_keys: set = set()
+    for e in entries:
+        for k, v in (e.labels or {}).items():
+            all_keys.add(k)
+            rep = _txt_label_repr(v)
+            values_by_key.setdefault(k, set()).add(rep)
+            first_repr.setdefault(k, rep)
+    common: dict = {}
+    differing: set = set()
+    for k in all_keys:
+        appears_in_all = all(k in (e.labels or {}) for e in entries)
+        if len(values_by_key.get(k, set())) == 1 and appears_in_all:
+            common[k] = first_repr[k]
+        else:
+            differing.add(k)
+    return common, differing

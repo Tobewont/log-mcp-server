@@ -1,4 +1,5 @@
 """Tests for utils.time_utils."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -8,6 +9,7 @@ import pytest
 from log_mcp_server.utils.errors import ValidationError
 from log_mcp_server.utils.time_utils import (
     format_in_tz,
+    format_short,
     from_unix_ns,
     parse_user_time,
     resolve_time_range,
@@ -111,3 +113,22 @@ class TestResolveTimeRange:
             from log_mcp_server.utils.time_utils import parse_user_time
 
             parse_user_time("2025-Z01-01T00:00:00")
+
+
+class TestFormatShort:
+    def test_utc_to_shanghai_short(self):
+        dt = datetime(2025, 9, 1, 7, 47, 3, tzinfo=timezone.utc)
+        out = format_short(dt, "Asia/Shanghai")
+        # 07:47:03 UTC -> 15:47:03 Shanghai
+        assert out == "09-01 15:47:03"
+
+    def test_no_year_no_offset(self):
+        dt = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        out = format_short(dt, "UTC")
+        assert out == "01-01 00:00:00"
+        assert "2025" not in out
+        assert "+" not in out
+
+    def test_naive_rejected(self):
+        with pytest.raises(ValidationError):
+            format_short(datetime(2025, 1, 1), "UTC")

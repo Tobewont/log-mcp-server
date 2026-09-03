@@ -1,4 +1,5 @@
 """Unit tests for the download writer."""
+
 from __future__ import annotations
 
 import csv
@@ -70,9 +71,7 @@ def test_jsonl_smart_parses_json_object_lines(tmp_path: Path):
     """
     raw = '{"level":"info","msg":"Response","req_body":"{\\"id\\":1}"}'
     target = tmp_path / "smart.jsonl"
-    write_download(
-        [_entry(line=raw)], target_path=target, fmt="jsonl", timezone="UTC"
-    )
+    write_download([_entry(line=raw)], target_path=target, fmt="jsonl", timezone="UTC")
     parsed = json.loads(target.read_text("utf-8").splitlines()[0])
     # The line field is now a nested object, not a string.
     assert isinstance(parsed["line"], dict)
@@ -82,7 +81,7 @@ def test_jsonl_smart_parses_json_object_lines(tmp_path: Path):
     assert parsed["line"]["req_body"] == '{"id":1}'
     # Critically: NO triple-backslash escaping in the on-disk text.
     text = target.read_text("utf-8")
-    assert "\\\\\\\"" not in text  # no \\\" sequence anywhere
+    assert '\\\\\\"' not in text  # no \\\" sequence anywhere
     assert "\\\\" not in text  # no double-backslash either
 
 
@@ -90,7 +89,7 @@ def test_jsonl_smart_parses_json_array_lines(tmp_path: Path):
     """Arrays at the top level should also be embedded structurally."""
     target = tmp_path / "arr.jsonl"
     write_download(
-        [_entry(line='[1, 2, 3]')],
+        [_entry(line="[1, 2, 3]")],
         target_path=target,
         fmt="jsonl",
         timezone="UTC",
@@ -155,7 +154,8 @@ def test_csv_columns_and_quoting(tmp_path: Path):
     assert json.loads(rows[0][3]) == {"app": "drama", "env": "prod"}
 
 
-def test_txt_format_one_line_per_entry(tmp_path: Path):
+def test_txt_single_origin_drops_tenant_and_common_labels(tmp_path: Path):
+    """单租户单集群：行内去掉 tenant/cluster 前缀；公共标签提到文件头。"""
     target = tmp_path / "logs.txt"
     write_download(
         [_entry(line="msg1"), _entry(line="msg2")],
@@ -163,13 +163,50 @@ def test_txt_format_one_line_per_entry(tmp_path: Path):
         fmt="txt",
         timezone="UTC",
     )
-    lines = target.read_text("utf-8").splitlines()
-    assert len(lines) == 2
-    # Sanity: includes time, tenant, labels, message
-    assert "tenant-a" in lines[0]
-    assert "loki-bj:3100" in lines[0]
+    text = target.read_text("utf-8")
+    lines = text.splitlines()
+    # 头部一行公共标签注释 + 两条日志
+    assert lines[0].startswith("# common labels:")
     assert "app=drama" in lines[0]
-    assert lines[0].endswith("msg1")
+    assert "env=prod" in lines[0]
+    body = [ln for ln in lines if not ln.startswith("#")]
+    assert len(body) == 2
+    # 单租户单集群，行内不再出现 tenant / cluster 前缀
+    assert "tenant-a" not in body[0]
+    assert "loki-bj:3100" not in body[0]
+    # 公共标签不再重复出现在每行
+    assert "app=drama" not in body[0]
+    assert body[0].endswith("msg1")
+
+
+def test_txt_multi_origin_keeps_prefix_and_diff_labels(tmp_path: Path):
+    """多租户 / 多集群 + 差异标签：行内保留来源前缀与差异标签。"""
+    target = tmp_path / "logs.txt"
+    write_download(
+        [
+            _entry(line="msg1", labels={"app": "drama", "env": "prod"}),
+            _entry(
+                line="msg2",
+                tenant="tenant-b",
+                cluster="loki-sh:3100",
+                labels={"app": "drama", "env": "dev"},
+            ),
+        ],
+        target_path=target,
+        fmt="txt",
+        timezone="UTC",
+    )
+    text = target.read_text("utf-8")
+    lines = text.splitlines()
+    # app 全体相同 -> 公共标签；env 取值不同 -> 差异标签
+    assert lines[0].startswith("# common labels:")
+    assert "app=drama" in lines[0]
+    assert "env" not in lines[0]
+    body = [ln for ln in lines if not ln.startswith("#")]
+    assert "tenant-a/loki-bj:3100" in body[0]
+    assert "tenant-b/loki-sh:3100" in body[1]
+    assert "env=prod" in body[0]
+    assert "env=dev" in body[1]
 
 
 def test_empty_entries_writes_header_only_or_blank(tmp_path: Path):
@@ -202,9 +239,7 @@ def test_build_filename_sanitises_tenant_label():
 
 def test_build_filename_rejects_unknown_format():
     with pytest.raises(ValueError):
-        build_filename(
-            tenant_label="t", fmt="xml", now=datetime.now(tz=timezone.utc)
-        )
+        build_filename(tenant_label="t", fmt="xml", now=datetime.now(tz=timezone.utc))
 
 
 def test_build_filename_appends_suffix_when_provided():

@@ -3,6 +3,7 @@
 所有具体的后端（Loki、Elasticsearch 等）都必须实现这个接口。MCP
 工具层只与 ``LogBackend`` 交互，对具体后端无感知。
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -43,8 +44,8 @@ class TenantQueryResult(Generic[T]):
     tenant: str
     data: Optional[T] = None
     error: Optional[str] = None
-    cluster_errors: Dict[str, str] = None  # type: ignore[assignment]
-    cluster_warnings: Dict[str, str] = None  # type: ignore[assignment]
+    cluster_errors: Optional[Dict[str, str]] = None
+    cluster_warnings: Optional[Dict[str, str]] = None
 
     def __post_init__(self) -> None:
         if self.cluster_errors is None:
@@ -143,3 +144,24 @@ class LogBackend(ABC):
         cluster_errors: Optional[Dict[str, str]] = None,
     ) -> List[str]:
         """列出某租户在（可选）时间窗内 ``label`` 的所有取值。"""
+
+    @abstractmethod
+    async def count_logs(
+        self,
+        query: str,
+        tenant: str,
+        start: datetime,
+        end: datetime,
+        instance: Optional[str] = None,
+        cluster_errors: Optional[Dict[str, str]] = None,
+    ) -> int:
+        """返回某租户在 ``[start, end]`` 内命中 ``query`` 的日志条数。
+
+        用于 "先探量再决定拉多少" 的场景，只回一个整数，几乎不占用
+        返回体 token。``query`` 是普通的日志选择器（不含聚合表达式），
+        由实现自己包上 ``count_over_time`` 之类的聚合。
+
+        多集群后端应对各集群求和；``cluster_errors`` 不为 ``None`` 时，
+        把 "未导致整体失败的部分集群错误" 以 ``{cluster_id: msg}`` 形式
+        填进去。
+        """

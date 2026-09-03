@@ -1,4 +1,5 @@
 """Tests for backend factory + transport selection."""
+
 from __future__ import annotations
 
 import pytest
@@ -20,7 +21,9 @@ class TestFactory:
         assert b.cluster_id == "loki:3100"
 
     def test_multi_addr_returns_fanout_with_health_cache(self):
-        cfg = LogConfig(addr="http://loki-bj:3100|http://loki-sh:3100|http://loki-sg:3100")
+        cfg = LogConfig(
+            addr="http://loki-bj:3100|http://loki-sh:3100|http://loki-sg:3100"
+        )
         b, cache = create_backend(cfg)
         assert isinstance(b, FanoutBackend)
         assert isinstance(cache, HealthCache)

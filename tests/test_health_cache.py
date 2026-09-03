@@ -1,4 +1,5 @@
 """Tests for the HealthCache."""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List
@@ -47,6 +48,9 @@ class StubBackend(LogBackend):
 
     async def get_label_values(self, *a, **kw) -> List[str]:
         return []
+
+    async def count_logs(self, *a, **kw) -> int:
+        return 0
 
 
 @pytest.mark.asyncio
