@@ -3,6 +3,7 @@
 鉴权请求头与租户隔离的单一权威来源。共享 HTTP client 和任何一次性
 请求都应当走 ``build_headers``。
 """
+
 from __future__ import annotations
 
 import base64

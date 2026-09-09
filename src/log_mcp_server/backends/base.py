@@ -165,3 +165,28 @@ class LogBackend(ABC):
         把 "未导致整体失败的部分集群错误" 以 ``{cluster_id: msg}`` 形式
         填进去。
         """
+
+    async def count_logs_grouped(
+        self,
+        query: str,
+        tenant: str,
+        start: datetime,
+        end: datetime,
+        by_label: str,
+        instance: Optional[str] = None,
+        cluster_errors: Optional[Dict[str, str]] = None,
+    ) -> Optional[Dict[str, int]]:
+        """按后端标签 ``by_label`` 分组统计命中条数（可选下推能力）。
+
+        用于 ``count_logs(group_by=...)`` 的"分布画像"：在不拉正文的
+        前提下先看清日志构成，是最省 token 的诊断入口。
+
+        返回 ``{标签值: 条数}``。返回 ``None`` 表示 **该后端无法把这个
+        维度下推**（例如 Loki 里根本没有对应标签），此时工具层会退化为
+        "抽样估算"并在输出里明确标注。
+
+        默认实现返回 ``None``，因此这是一个 **向后兼容** 的可选扩展：
+        既有后端不实现也不会破坏 ``count_logs``。
+        """
+        del query, tenant, start, end, by_label, instance, cluster_errors
+        return None

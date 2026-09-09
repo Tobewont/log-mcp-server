@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlparse
@@ -22,6 +23,10 @@ logger = structlog.get_logger(__name__)
 
 
 _VALID_DIRECTIONS = ("forward", "backward")
+
+# Prometheus / Loki 标签名的合法字符集。分组计数会把标签名直接拼进
+# LogQL 表达式，所以必须先校验，避免表达式注入。
+_LABEL_NAME_RE = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*")
 
 
 def _derive_cluster_id(addr: str) -> str:
@@ -310,3 +315,70 @@ class LokiBackend(LogBackend):
                 except (TypeError, ValueError):
                     continue
         return total
+
+    async def count_logs_grouped(
+        self,
+        query: str,
+        tenant: str,
+        start: datetime,
+        end: datetime,
+        by_label: str,
+        instance: Optional[str] = None,
+        cluster_errors: Optional[Dict[str, str]] = None,
+    ) -> Optional[Dict[str, int]]:
+        """把分组计数下推到 Loki：``sum by (<label>) (count_over_time(...))``。
+
+        ``by_label`` 必须是 Loki 侧真实存在的标签（例如 Loki 3.x 自动
+        附加的 ``detected_level``）。查询成功但没有任何 series 时返回
+        空字典；Loki 报错（多为"标签不存在"或表达式不合法）时返回
+        ``None``，交由工具层退化为抽样估算。
+        """
+        del cluster_errors
+        self._check_instance(instance)
+        validate_tenant(tenant)
+        if not query or not query.strip():
+            raise ValidationError("Query cannot be empty")
+        if not by_label or not by_label.strip():
+            raise ValidationError("by_label cannot be empty")
+        label = by_label.strip()
+        if not _LABEL_NAME_RE.fullmatch(label):
+            raise ValidationError(
+                f"Invalid label name {by_label!r} for grouped count "
+                "(expected a Prometheus/Loki label identifier)"
+            )
+
+        span_seconds = max(1, int((end - start).total_seconds()))
+        count_expr = (
+            f"sum by ({label}) (count_over_time({query.strip()}[{span_seconds}s]))"
+        )
+        try:
+            response = await self.http.get(
+                "/loki/api/v1/query",
+                params={"query": count_expr, "time": str(to_unix_ns(end))},
+                tenant=tenant,
+            )
+        except Exception as e:  # noqa: BLE001 — 无法下推时退化为抽样
+            logger.info(
+                "Grouped count push-down failed; caller should fall back to sampling",
+                label=label,
+                error=str(e),
+            )
+            return None
+        if response.get("status") != "success":
+            return None
+
+        data = response.get("data", {})
+        if data.get("resultType") != "vector":
+            return None
+        grouped: Dict[str, int] = {}
+        for sample in data.get("result") or []:
+            metric = sample.get("metric") or {}
+            key = metric.get(label) or "(none)"
+            value = sample.get("value") or []
+            if len(value) < 2:
+                continue
+            try:
+                grouped[key] = grouped.get(key, 0) + int(float(value[1]))
+            except (TypeError, ValueError):
+                continue
+        return grouped

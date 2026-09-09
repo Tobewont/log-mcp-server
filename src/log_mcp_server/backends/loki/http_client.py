@@ -3,6 +3,7 @@
 该 client 在后端启动时 **只创建一次**，并在并发的工具调用之间共享，
 保留连接池和 keep-alive，避免每次请求都重连。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -159,9 +160,7 @@ class LokiHTTPClient:
                     )
             except Exception as e:
                 err_msg = str(e) or type(e).__name__
-                last_error = BackendConnectionError(
-                    f"Unexpected HTTP error: {err_msg}"
-                )
+                last_error = BackendConnectionError(f"Unexpected HTTP error: {err_msg}")
                 logger.warning(
                     "Loki HTTP unexpected error",
                     error=err_msg,

@@ -78,11 +78,24 @@ uv run log-mcp-server
 | `direction` | ❌ | `backward`（默认，最新在前）或 `forward` |
 | `tenant` | ❌ | 指定租户 ID。**推荐在多租户场景下使用**，避免不必要的全租户扇出 |
 | `instance` | ❌ | 指定 Loki 实例（cluster id，例如 `loki-bj:3100` 或 `loki.example.com`，从 `health_check` 输出可见）。指定后**只查该实例**，绕过多 Loki 扇出 |
-| `verbosity` | ❌ | 返回体详略档位：`compact`（默认，只输出正文一行一条，token 最省）/ `normal`（正文 + 短格式时间 + 差异标签，公共标签提到头部）/ `full`（历史完整格式：Entry 头 + 纳秒时间 + 全量标签）。省略时用 `LOG_DEFAULT_VERBOSITY` |
+| `verbosity` | ❌ | 返回体详略档位：`compact`（默认，只输出正文一行一条，token 最省）/ `normal`（正文 + 短格式时间 + 差异标签，公共标签提到头部）/ `full`（完整格式：Entry 头 + 纳秒 isoformat 时间 + 全量标签）。省略时用 `LOG_DEFAULT_VERBOSITY` |
+| `strip_ansi` | ❌ | 是否剥离正文中的 ANSI 颜色码。**零信息损失**优化，默认开启（`LOG_STRIP_ANSI`）；`full` 模式恒不剥离 |
+| `min_level` | ❌ | 最低级别过滤，**默认不过滤**（排查问题需要完整上下文）。取值 `TRACE`/`DEBUG`/`INFO`/`SUCCESS`/`WARNING`(`WARN`)/`ERROR`/`CRITICAL`。传值后隐藏更低级别的行，并在输出中报出被隐藏条数；解析不出级别的行一律保留。仅在只需概览时使用 |
+| `fold_scope` | ❌ | `compact` 折叠作用域：`adjacent`（默认，只折连续同模板行，不打乱时序）/ `global`（全窗口按模板聚类，省 token 最多但属有损概览）。省略时用 `LOG_FOLD_SCOPE`。两者都不会折叠 `WARNING`/`ERROR`/`CRITICAL` 行 |
+| `exclude_loggers` | ❌ | 噪音源 logger 黑名单，**默认不排除任何东西**（省略时取 `LOG_DEFAULT_EXCLUDE_LOGGERS`，其默认也为空）。支持 fnmatch 通配，例如 `["httpcore.*", "uvicorn.protocols.http.h11_impl"]`，这类噪音源往往占据大部分正文字符。**有损**：`WARNING`/`ERROR`/`CRITICAL` 行即使命中黑名单也保留、解析不出 logger 的行也保留，被隐藏条数会报出；`full` 模式不生效 |
+| `dedup_timestamp` | ❌ | 去掉正文开头与行首重复的时间戳。**仅 `normal` 生效**——`compact` 行首没有时间、正文时间戳是唯一时间来源，因此恒不去重；`full` 也不处理。省略时用 `LOG_DEDUP_TIMESTAMP`（默认 `false`）。只在时间确实吻合时才去掉，不吻合就保持原样 |
+| `hoist_common_prefix` | ❌ | 把所有输出行的最长公共前缀（≥8 字符时）提到头部 `**Common Prefix:**` 只输出一次，行内去掉（同一批日志常共享时间 / 级别 / 模块的固定前缀）。**零信息损失**，默认开启（`LOG_HOIST_COMMON_PREFIX`）。`compact`/`normal` 均生效；只有 1 行、前缀过短、或前缀会把某行吃空时自动不上提；多租户的 `[tenant@cluster]` 标记不参与计算。`full` 不生效 |
+| `collapse_whitespace` | ❌ | 行内连续 ≥2 个**空格**压成 1 个（loguru 级别对齐填充是主要来源；只处理空格，tab 与换行不碰）。**行首缩进原样保留**——堆栈跟踪与 YAML/JSON 片段的结构不受影响。**零信息损失**，默认开启（`LOG_COLLAPSE_WHITESPACE`）。`compact`/`normal` 均生效，`full` 不生效 |
+| `hoist_common_date` | ❌ | 省略正文开头重复的 `YYYY-MM-DD ` 日期，并在头部 `**Date:**` 标注一次。`HH:MM:SS(.mmm)` **一定保留**——`compact` 行首没有时间，正文时间戳是唯一时间源。**跨天自动整批禁用**（出现 ≥2 个不同日期就完全保持原样）。**零信息损失**，默认开启（`LOG_HOIST_COMMON_DATE`）。**仅 `compact`**：`normal` 行首已有 `MM-DD`，改由 `dedup_timestamp` 处理；`full` 不生效 |
+| `sample_per_template` | ❌ | 分层采样：每种日志模板最多保留 N 条，**默认不采样**。用于 `limit` 被单一噪音模板占满、稀有模板被挤出结果的场景（一批日志里的唯一模板数通常远少于条数）。**有损**：`WARNING`/`ERROR`/`CRITICAL` 行完全不参与采样、全部保留，结果保持时间顺序，被隐藏条数会报出；`full` 模式不生效 |
 
-返回 Markdown 报告：`compact`/`normal` 精简头部并把公共标签上提，正文一行一条；触及每租户 `limit` 时会额外提示可能被截断并给出已覆盖到的最早时间戳；`full` 保留历史逐条格式。文末 `Errors` 区列出每个失败的 tenant 和 cluster 错误（多 Loki 部分失败时）。
+返回 Markdown 报告：`compact`/`normal` 精简头部并把公共标签上提，正文一行一条；触及每租户 `limit` 时会额外提示可能被截断并给出已覆盖到的最早时间戳；`full` 为逐条完整格式。文末 `Errors` 区列出每个失败的 tenant 和 cluster 错误（多 Loki 部分失败时）。
 
 > **返回体瘦身**：`compact` 是新默认档位，去掉了重复的 Entry 头 / 全量标签 / 纳秒时间戳，并对连续同模板行做 `×N` 折叠、对超长单行截断（见 `LOG_MAX_LINE_CHARS` / `LOG_FOLD_REPEATS`）。要把大量日志拉到本地分析，用 `download_logs` 而不是提高 `verbosity`。
+
+> **默认路径保证语义完整**：默认不过滤任何级别、不排除任何 logger、不采样、不打乱时间顺序、不丢任何一条日志内容。`min_level`、`exclude_loggers`、`sample_per_template` 与 `fold_scope=global` 都是**有损**选项，默认关闭；一旦启用都会在输出中报出被隐藏的条数并告知如何看全量。`verbosity="full"` 是绝对逃生舱——不剥 ANSI、不折叠、不过滤、不排除、不采样，保持原始字节。`WARNING`/`ERROR`/`CRITICAL` 行永不被折叠、排除或采样掉。
+
+> **推荐用法**：想缩减返回体时，**先** `count_logs(group_by="logger")` 看清噪音源分布，**再** 用 `exclude_loggers` 精确屏蔽——比盲目提高 `min_level` 或开 `fold_scope=global` 损失的信息少得多。
 
 ### 🏷️ `get_labels`
 
@@ -109,7 +122,7 @@ uv run log-mcp-server
 
 ### 🔢 `count_logs`
 
-**探量**：只返回命中日志的条数（一个整数），几乎不占用返回体 token。适合在 `query_logs` / `download_logs` 之前先判断数据量，再决定缩小时间窗、直接查看还是下载到本地。
+**探量 / 分布画像**：不返回日志正文，只回条数或构成分布，几乎不占用返回体 token。适合在 `query_logs` / `download_logs` 之前先判断数据量与构成，再决定缩小时间窗、精确过滤还是下载到本地。
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
@@ -117,8 +130,11 @@ uv run log-mcp-server
 | `start` / `end` | ❌ | 时间范围，同 `query_logs` |
 | `tenant` | ❌ | 指定租户；省略则对所有可见租户分别计数 |
 | `instance` | ❌ | 指定 Loki 实例；省略则对所有健康实例求和 |
+| `group_by` | ❌ | 分布画像维度，**默认 `None` 只回总条数**。`level`（按级别，优先下推 `sum by (detected_level) (count_over_time(...))`）/ `logger`（按 logger 模块，用于定位噪音源）/ `template`（按归一化日志模板，Top 20）。无法下推的维度会退化为**抽样估算**（最多 1000 条样本），输出中会明确标注 |
 
 底层走 Loki 即时查询 `sum(count_over_time(<selector>[<range>]))`；多 Loki 扇出时对各集群求和。返回每租户命中数与总数。同样要求客户端先声明 `X-Allowed-Tenants` / `LOKI_CLIENT_TENANTS`。
+
+> **最省 token 的诊断入口**：`count_logs(group_by="logger")` 一次调用就能看清"日志由哪些模块构成、谁在刷屏"，然后用 `query_logs(exclude_loggers=[...])` 精确拉需要的那部分正文。`group_by` 走抽样估算时，表格里的条数与占比描述的是**样本**而非全量窗口，输出会用 `⚠️` 明确标注，不要当成精确总数——精确总数请用不带 `group_by` 的 `count_logs`。
 
 ### ❤️ `health_check`
 
@@ -433,7 +449,9 @@ kubectl -n log-mcp port-forward svc/log-mcp-server 8000:8000
 | `LOKI_PASSWORD` | Basic 认证密码 | — |
 | `LOKI_BEARER_TOKEN` | Bearer token | — |
 | `LOKI_BEARER_TOKEN_FILE` | Bearer token 文件路径 | — |
-| `LOKI_CA_FILE` / `LOKI_CERT_FILE` / `LOKI_KEY_FILE` | TLS 证书 | — |
+| `LOKI_CA_FILE` | TLS CA 证书路径 | — |
+| `LOKI_CERT_FILE` | TLS 客户端证书路径（须与 `LOKI_KEY_FILE` 同时设置） | — |
+| `LOKI_KEY_FILE` | TLS 客户端私钥路径（须与 `LOKI_CERT_FILE` 同时设置） | — |
 | `LOKI_TLS_SKIP_VERIFY` | 跳过 TLS 校验 | `false` |
 | `LOKI_CONNECT_TIMEOUT` | 连接超时（秒） | `10.0` |
 | `LOKI_READ_TIMEOUT` | 读取超时（秒） | `15.0` |
@@ -448,8 +466,20 @@ kubectl -n log-mcp port-forward svc/log-mcp-server 8000:8000
 | `LOG_DEFAULT_VERBOSITY` | `query_logs` 默认详略档位：`compact` / `normal` / `full` | `compact` |
 | `LOG_MAX_LINE_CHARS` | `compact`/`normal` 单条日志行最大字符数，超过截断（`full` 不截断） | `2000` |
 | `LOG_FOLD_REPEATS` | `compact` 模式是否折叠连续同模板重复行（≥3 条折叠为一条并标 ×N） | `true` |
+| `LOG_STRIP_ANSI` | `compact`/`normal` 是否剥离正文中的 ANSI 颜色码（零信息损失；`full` 不剥离） | `true` |
+| `LOG_FOLD_SCOPE` | `compact` 折叠作用域：`adjacent`（只折连续行）/ `global`（全窗口按模板聚类，有损概览） | `adjacent` |
+| `LOG_DEFAULT_EXCLUDE_LOGGERS` | `query_logs` 默认排除的 logger 名（逗号分隔，支持 fnmatch 通配）。默认空 = 开箱不排除；异常级别行与解析不出 logger 的行永不被排除 | （空） |
+| `LOG_DEDUP_TIMESTAMP` | `normal` 模式是否去掉正文开头与行首重复的时间戳（`compact`/`full` 恒不处理） | `false` |
+| `LOG_HOIST_COMMON_PREFIX` | 把所有输出行的最长公共前缀（≥8 字符）提到头部只输出一次（零信息损失；`compact`/`normal` 生效，`full` 不生效） | `true` |
+| `LOG_COLLAPSE_WHITESPACE` | 行内连续 ≥2 个**空格**压成 1 个（只处理空格，tab 不碰），**行首缩进保留**（零信息损失；`compact`/`normal` 生效，`full` 不生效） | `true` |
+| `LOG_HOIST_COMMON_DATE` | 省略正文开头重复的 `YYYY-MM-DD ` 日期、时分秒一定保留（零信息损失；仅 `compact`，跨天时整批禁用） | `true` |
 | `LOG_DEFAULT_TIME_RANGE_MINUTES` | 默认时间范围（分钟） | `30` |
 | `LOG_TIMEZONE` | 显示时区 | `Asia/Shanghai` |
+| **日志下载** | | |
+| `LOG_DEFAULT_DOWNLOAD_FORMAT` | `download_logs` 未显式传 `fmt` 时的默认格式：`txt` / `jsonl` / `csv` | `txt` |
+| `LOG_DOWNLOAD_DIR` | 服务器端文件落地目录；stdio 模式下就是用户本机路径 | `./logs/downloads` |
+| `LOG_DOWNLOAD_TTL_SECONDS` | HTTP 模式下 token + 文件存活秒数 | `3600` |
+| `LOG_DOWNLOAD_BASE_URL` | 反代下用于渲染下载 URL 的 base；未设时从请求 Host header 推断 | — |
 
 ### YAML 配置示例
 
