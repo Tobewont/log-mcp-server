@@ -248,3 +248,112 @@ def test_default_verbosity_normalised_and_validated():
 def test_max_line_chars_must_be_positive():
     with pytest.raises(Exception):
         LogConfig(addr="http://loki.test:3100", tenants="a", max_line_chars=0)
+
+
+def test_strip_ansi_and_fold_scope_defaults():
+    cfg = LogConfig(addr="http://loki.test:3100", tenants="a")
+    assert cfg.strip_ansi is True
+    assert cfg.fold_scope == "adjacent"
+
+
+def test_fold_scope_normalised_and_validated():
+    cfg = LogConfig(addr="http://loki.test:3100", tenants="a", fold_scope="  GLOBAL  ")
+    assert cfg.fold_scope == "global"
+    with pytest.raises(Exception):
+        LogConfig(addr="http://loki.test:3100", tenants="a", fold_scope="everything")
+
+
+def test_strip_ansi_can_be_disabled():
+    cfg = LogConfig(addr="http://loki.test:3100", tenants="a", strip_ansi=False)
+    assert cfg.strip_ansi is False
+
+
+def test_default_exclude_loggers_defaults_to_empty():
+    """开箱不排除任何 logger——"隐藏内容"必须是用户主动选择的。"""
+    cfg = LogConfig(addr="http://loki.test:3100", tenants="a")
+    assert cfg.default_exclude_loggers == []
+
+
+def test_default_exclude_loggers_parses_comma_separated_string():
+    cfg = LogConfig(
+        addr="http://loki.test:3100",
+        tenants="a",
+        default_exclude_loggers=" httpcore.*, uvicorn.protocols.http.h11_impl , ",
+    )
+    assert cfg.default_exclude_loggers == [
+        "httpcore.*",
+        "uvicorn.protocols.http.h11_impl",
+    ]
+
+
+def test_default_exclude_loggers_accepts_list():
+    cfg = LogConfig(
+        addr="http://loki.test:3100",
+        tenants="a",
+        default_exclude_loggers=["httpcore.*", " ", "uvicorn.*"],
+    )
+    assert cfg.default_exclude_loggers == ["httpcore.*", "uvicorn.*"]
+
+
+def test_default_exclude_loggers_from_env(monkeypatch):
+    monkeypatch.setenv("LOG_DEFAULT_EXCLUDE_LOGGERS", "httpcore.*,asyncio")
+    cfg = LogConfig(addr="http://loki.test:3100", tenants="a")
+    assert cfg.default_exclude_loggers == ["httpcore.*", "asyncio"]
+
+
+def test_default_exclude_loggers_rejects_bad_type():
+    with pytest.raises(Exception):
+        LogConfig(
+            addr="http://loki.test:3100",
+            tenants="a",
+            default_exclude_loggers=123,
+        )
+
+
+def test_dedup_timestamp_defaults_to_false():
+    cfg = LogConfig(addr="http://loki.test:3100", tenants="a")
+    assert cfg.dedup_timestamp is False
+
+
+def test_dedup_timestamp_can_be_enabled():
+    cfg = LogConfig(addr="http://loki.test:3100", tenants="a", dedup_timestamp=True)
+    assert cfg.dedup_timestamp is True
+
+
+def test_dedup_timestamp_from_env(monkeypatch):
+    monkeypatch.setenv("LOG_DEDUP_TIMESTAMP", "false")
+    cfg = LogConfig(addr="http://loki.test:3100", tenants="a")
+    assert cfg.dedup_timestamp is False
+
+
+# ---------------------------------------------------------------------------
+# A 档零信息损失瘦身：三项配置默认全开，可被构造参数 / 环境变量覆盖
+# ---------------------------------------------------------------------------
+def test_slim_flags_default_to_true():
+    cfg = LogConfig(addr="http://loki.test:3100", tenants="a")
+    assert cfg.hoist_common_prefix is True
+    assert cfg.collapse_whitespace is True
+    assert cfg.hoist_common_date is True
+
+
+def test_slim_flags_can_be_disabled_by_kwargs():
+    cfg = LogConfig(
+        addr="http://loki.test:3100",
+        tenants="a",
+        hoist_common_prefix=False,
+        collapse_whitespace=False,
+        hoist_common_date=False,
+    )
+    assert cfg.hoist_common_prefix is False
+    assert cfg.collapse_whitespace is False
+    assert cfg.hoist_common_date is False
+
+
+def test_slim_flags_from_env(monkeypatch):
+    monkeypatch.setenv("LOG_HOIST_COMMON_PREFIX", "false")
+    monkeypatch.setenv("LOG_COLLAPSE_WHITESPACE", "false")
+    monkeypatch.setenv("LOG_HOIST_COMMON_DATE", "false")
+    cfg = LogConfig(addr="http://loki.test:3100", tenants="a")
+    assert cfg.hoist_common_prefix is False
+    assert cfg.collapse_whitespace is False
+    assert cfg.hoist_common_date is False

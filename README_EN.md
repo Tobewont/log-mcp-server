@@ -77,8 +77,22 @@ Query logs over a time range. When `tenant` is provided only that tenant is quer
 | `direction` | no | `backward` (newest first, default) or `forward` |
 | `tenant` | no | Tenant ID. **Strongly recommended** for multi-tenant deployments to avoid unnecessary fan-out |
 | `instance` | no | Loki cluster id (e.g. `loki-bj:3100` or `loki.example.com`, as shown by `health_check`). When given, the query is restricted to **this single cluster only** — bypassing fan-out |
+| `verbosity` | no | `compact` (default, body only — cheapest) / `normal` (body + short time + differing labels) / `full` (complete per-entry format: entry header + nanosecond isoformat time + all labels). Defaults to `LOG_DEFAULT_VERBOSITY` |
+| `strip_ansi` | no | Strip ANSI colour escapes from log lines. **Lossless**, on by default (`LOG_STRIP_ANSI`); `full` is never stripped |
+| `min_level` | no | Minimum level filter — **no filtering by default** (troubleshooting needs full context). One of `TRACE`/`DEBUG`/`INFO`/`SUCCESS`/`WARNING`(`WARN`)/`ERROR`/`CRITICAL`. Hidden entries are counted in the output; lines whose level cannot be parsed are always kept |
+| `fold_scope` | no | `compact` fold scope: `adjacent` (default, consecutive runs only — preserves ordering) / `global` (cluster by template across the whole window — lossy overview). Defaults to `LOG_FOLD_SCOPE`. Neither folds `WARNING`/`ERROR`/`CRITICAL` |
+| `exclude_loggers` | no | Noisy-logger blocklist — **nothing is excluded by default** (falls back to `LOG_DEFAULT_EXCLUDE_LOGGERS`, itself empty). fnmatch wildcards supported, e.g. `["httpcore.*", "uvicorn.protocols.http.h11_impl"]`; such noise sources often account for most of the body characters. **Lossy**: `WARNING`/`ERROR`/`CRITICAL` lines are kept even when their logger matches, lines whose logger cannot be parsed are kept too, and the hidden count is reported. Not applied in `full` |
+| `dedup_timestamp` | no | Drop the timestamp at the start of the body when it duplicates the line prefix. **`normal` only** — `compact` has no time prefix, so the in-body timestamp is the only time source and is never removed; `full` is untouched. Defaults to `LOG_DEDUP_TIMESTAMP` (`false`). Only removed when the times actually agree; otherwise left as-is |
+| `hoist_common_prefix` | no | Hoist the longest common prefix of all rendered lines (when ≥8 chars) into a single `**Common Prefix:**` header line and strip it from each line (a batch of log lines usually shares a fixed time / level / module prefix). **Lossless**, on by default (`LOG_HOIST_COMMON_PREFIX`). Applies to `compact`/`normal`; skipped automatically for a single line, a too-short prefix, or a prefix that would empty a line; the multi-tenant `[tenant@cluster]` tag is excluded from the computation. Not applied in `full` |
+| `collapse_whitespace` | no | Collapse runs of ≥2 inner **spaces** into one (loguru level padding is the main source; spaces only — tabs and newlines are untouched). **Leading indentation is preserved** so stack traces and YAML/JSON fragments keep their structure. **Lossless**, on by default (`LOG_COLLAPSE_WHITESPACE`). Applies to `compact`/`normal`, not `full` |
+| `hoist_common_date` | no | Drop the repeated `YYYY-MM-DD ` date at the start of the body and note it once in a `**Date:**` header. `HH:MM:SS(.mmm)` is **always kept** — `compact` has no time prefix, so the in-body clock is the only time source. **Automatically disabled for the whole batch when the window spans midnight** (≥2 distinct dates ⇒ left untouched). **Lossless**, on by default (`LOG_HOIST_COMMON_DATE`). **`compact` only**: `normal` already prints `MM-DD` and uses `dedup_timestamp`; `full` untouched |
+| `sample_per_template` | no | Stratified sampling: keep at most N entries per log template — **no sampling by default**. Use when a single noisy template fills up `limit` and squeezes out rare templates (a batch usually contains far fewer unique templates than entries). **Lossy**: `WARNING`/`ERROR`/`CRITICAL` lines never take part in sampling and are all kept, time ordering is preserved, and the hidden count is reported. Not applied in `full` |
 
 Returns a Markdown report. Each log entry carries `Tenant` and `Cluster` (when multiple Lokis are configured). Any partial failures (per-tenant or per-cluster) are listed at the bottom in an **Errors** section.
+
+> **The default path is lossless**: no level filtering, no logger exclusion, no sampling, no reordering, no dropped lines. `min_level`, `exclude_loggers`, `sample_per_template` and `fold_scope=global` are opt-in **lossy** options; whenever they hide something the response reports how many entries were hidden and how to see everything. `verbosity="full"` is the absolute escape hatch — no ANSI stripping, no folding, no filtering, no exclusion, no sampling. `WARNING`/`ERROR`/`CRITICAL` lines are never folded, excluded or sampled away.
+
+> **Recommended workflow**: to shrink the response, **first** run `count_logs(group_by="logger")` to see where the noise comes from, **then** block it precisely with `exclude_loggers` — this loses far less information than blindly raising `min_level` or turning on `fold_scope=global`.
 
 ### `get_labels`
 
@@ -103,6 +117,22 @@ List all values of a given label (de-duplicated). When `tenant` is provided only
 | `tenant` | no | Tenant ID; omit to query all **client-allowed** tenants |
 | `instance` | no | Loki cluster id; omit for default fan-out across healthy clusters |
 
+### `count_logs`
+
+**Sizing / distribution profile**: returns counts only — never log bodies — so it costs almost no response tokens. Use it before `query_logs` / `download_logs` to decide whether to narrow the window, filter precisely, or download everything locally.
+
+| Argument | Required | Description |
+|---|---|---|
+| `query` | yes | LogQL selector, same as `query_logs` (no aggregation expressions) |
+| `start` / `end` | no | Time range, same as `query_logs` |
+| `tenant` | no | Tenant ID; omit to count each client-allowed tenant separately |
+| `instance` | no | Loki cluster id; omit to sum across all healthy clusters |
+| `group_by` | no | Distribution dimension — **defaults to `None`, i.e. total count only**. `level` (by log level, pushed down as `sum by (detected_level) (count_over_time(...))` when possible) / `logger` (by logger module — the fastest way to find noise sources) / `template` (by normalised log template, Top 20). Dimensions that cannot be pushed down fall back to a **sampled estimate** (up to 1000 entries) and the output says so explicitly |
+
+Under the hood it issues a Loki instant query `sum(count_over_time(<selector>[<range>]))`; with multi-Loki fan-out the per-cluster results are summed. Requires the client tenant scope (`X-Allowed-Tenants` / `LOKI_CLIENT_TENANTS`) like the other log tools.
+
+> **The cheapest diagnostic entry point**: one `count_logs(group_by="logger")` call tells you which modules the logs consist of and who is flooding them; then pull only the interesting bodies with `query_logs(exclude_loggers=[...])`. When `group_by` falls back to sampling, the counts and percentages describe the **sample**, not the full window — the output flags this with `⚠️`. For an exact total, call `count_logs` without `group_by`.
+
 ### `health_check`
 
 Returns backend health.  With multiple Lokis it shows per-cluster status (`healthy` / `unhealthy`) and the Loki version.  Also reports the **Allowed Tenants** for the current session and where the filter came from (see next section).  No arguments.
@@ -118,7 +148,7 @@ Run a LogQL query and write the results to a file the **user can pull onto their
 | `limit` | no | Per-tenant cap; defaults to `LOG_MAX_LIMIT`, must not exceed it |
 | `direction` | no | `backward` / `forward` |
 | `tenant` / `instance` | no | Same semantics as `query_logs`; client must have declared `X-Allowed-Tenants` / `LOKI_CLIENT_TENANTS` |
-| `fmt` | no | `jsonl` (default) / `csv` / `txt` |
+| `fmt` | no | `txt` (default, slimmed) / `jsonl` / `csv`; falls back to `LOG_DEFAULT_DOWNLOAD_FORMAT` |
 
 **"Download to local" works differently per transport** — MCP itself has no API for the server to write a file on the client, so the implementation has to differ:
 
@@ -400,7 +430,9 @@ Configuration sources (highest priority first):
 | `LOKI_PASSWORD` | Basic auth password | — |
 | `LOKI_BEARER_TOKEN` | Bearer token | — |
 | `LOKI_BEARER_TOKEN_FILE` | Bearer token file path | — |
-| `LOKI_CA_FILE` / `LOKI_CERT_FILE` / `LOKI_KEY_FILE` | TLS cert files | — |
+| `LOKI_CA_FILE` | TLS CA certificate path | — |
+| `LOKI_CERT_FILE` | TLS client certificate path (must be set together with `LOKI_KEY_FILE`) | — |
+| `LOKI_KEY_FILE` | TLS client key path (must be set together with `LOKI_CERT_FILE`) | — |
 | `LOKI_TLS_SKIP_VERIFY` | Skip TLS verification | `false` |
 | `LOKI_CONNECT_TIMEOUT` | HTTP connect timeout (s) | `10.0` |
 | `LOKI_READ_TIMEOUT` | HTTP read timeout (s) | `15.0` |
@@ -415,8 +447,20 @@ Configuration sources (highest priority first):
 | `LOG_DEFAULT_VERBOSITY` | Default `query_logs` verbosity: `compact` / `normal` / `full` | `compact` |
 | `LOG_MAX_LINE_CHARS` | Max chars per line in `compact`/`normal` before truncation (`full` untouched) | `2000` |
 | `LOG_FOLD_REPEATS` | Fold ≥3 consecutive same-template lines into one with ×N (`compact` only) | `true` |
+| `LOG_STRIP_ANSI` | Strip ANSI colour escapes from log lines in `compact`/`normal` (lossless; `full` untouched) | `true` |
+| `LOG_FOLD_SCOPE` | `compact` fold scope: `adjacent` (consecutive runs only) / `global` (cluster by template across the window — lossy overview) | `adjacent` |
+| `LOG_DEFAULT_EXCLUDE_LOGGERS` | Default `query_logs` logger blocklist (comma-separated, fnmatch wildcards). Empty means nothing is excluded out of the box; abnormal-level lines and lines with unparsable loggers are never excluded | *(empty)* |
+| `LOG_DEDUP_TIMESTAMP` | Whether `normal` drops the in-body timestamp that duplicates the line prefix (`compact`/`full` untouched) | `false` |
+| `LOG_HOIST_COMMON_PREFIX` | Hoist the longest common prefix (≥8 chars) of rendered lines into a single header line (lossless; `compact`/`normal` only) | `true` |
+| `LOG_COLLAPSE_WHITESPACE` | Collapse runs of ≥2 inner **spaces** into one (spaces only; tabs untouched), **keeping leading indentation** (lossless; `compact`/`normal` only) | `true` |
+| `LOG_HOIST_COMMON_DATE` | Drop the repeated in-body `YYYY-MM-DD ` date while always keeping the clock (lossless; `compact` only, disabled across midnight) | `true` |
 | `LOG_DEFAULT_TIME_RANGE_MINUTES` | Default time-window in minutes | `30` |
 | `LOG_TIMEZONE` | Display timezone | `Asia/Shanghai` |
+| **Downloads** | | |
+| `LOG_DEFAULT_DOWNLOAD_FORMAT` | Default `download_logs` format when `fmt` is omitted: `txt` / `jsonl` / `csv` | `txt` |
+| `LOG_DOWNLOAD_DIR` | Where the server writes files; in stdio this **is** the user's machine | `./logs/downloads` |
+| `LOG_DOWNLOAD_TTL_SECONDS` | TTL for tokens and files in HTTP mode | `3600` |
+| `LOG_DOWNLOAD_BASE_URL` | Public URL base used to render download links; falls back to the request Host header | — |
 
 ### YAML example
 

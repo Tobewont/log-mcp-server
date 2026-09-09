@@ -236,8 +236,8 @@ def _run_http(
     不能直接调用 ``mcp.run("streamable-http")``，因为那会启动它自己的
     uvicorn，且不留任何挂载非 MCP 路由的钩子。这里改为向 FastMCP 取
     底层 Starlette 应用，然后直接给它注册下载路由。MCP lifespan 仍然
-    会正常执行（我们没有再包一层父应用，只是多注册了一条路由），所以
-    后端 / 健康缓存 / 工具初始化都和原来一样。
+    会正常执行（没有再包一层父应用，只是多注册了一条路由），因此
+    后端 / 健康缓存 / 工具初始化都按 MCP 自身的流程完成。
     """
     import anyio
     import uvicorn

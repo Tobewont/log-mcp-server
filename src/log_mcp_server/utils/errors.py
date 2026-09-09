@@ -1,4 +1,5 @@
 """log-mcp-server 自定义异常类型。"""
+
 from typing import Any, Dict, Optional
 
 
