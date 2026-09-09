@@ -1,4 +1,5 @@
 """Shared fixtures for log_mcp_server tests."""
+
 from __future__ import annotations
 
 from typing import Any, Dict

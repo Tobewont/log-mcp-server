@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Annotated, Any, Dict, List, Optional, Tuple, Type
 
 import structlog
 import yaml
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
+    NoDecode,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
@@ -111,7 +112,7 @@ class _YamlConfigSource(PydanticBaseSettingsSource):
 class LogConfig(BaseSettings):
     """log-mcp-server 顶层配置。
 
-    Loki 后端相关字段保留历史的 ``LOKI_*`` 环境变量前缀以保持向后兼容；
+    Loki 后端相关字段沿用 ``LOKI_*`` 环境变量前缀以保持向后兼容；
     跨后端 / 通用字段通过 :class:`AliasChoices` 用 ``LOG_*`` 前缀；
     MCP 传输相关字段使用 ``MCP_*`` 前缀。
     """
@@ -229,7 +230,7 @@ class LogConfig(BaseSettings):
     #   * compact —— 只输出日志正文，一行一条，无 Entry 头 / Time / Labels；
     #     常规排查首选，token 开销最低。
     #   * normal  —— 正文 + 差异标签 + 短格式时间，公共标签在头部只输出一次。
-    #   * full    —— 保留历史完整格式（Entry 头 + 纳秒 isoformat + 全量标签）。
+    #   * full    —— 完整格式（Entry 头 + 纳秒 isoformat 时间 + 全量标签）。
     # 单次调用可用 query_logs 的 verbosity 参数覆盖本默认值。
     default_verbosity: str = Field(
         default="compact",
@@ -245,6 +246,77 @@ class LogConfig(BaseSettings):
     fold_repeats: bool = Field(
         default=True,
         validation_alias=AliasChoices("fold_repeats", "LOG_FOLD_REPEATS"),
+    )
+    # compact / normal 模式下是否剥离日志正文中的 ANSI 转义序列。
+    # 终端颜色对 AI 阅读没有价值，而级别文字本来就在正文里，因此这是
+    # 零信息损失的优化，默认开启；full 模式永不剥离。
+    strip_ansi: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("strip_ansi", "LOG_STRIP_ANSI"),
+    )
+    # compact 模式下重复行折叠的作用域：
+    #   * adjacent —— 仅折叠 **连续** 的同模板行（默认），不打乱时序，
+    #     语义最安全。
+    #   * global   —— 全窗口按模板聚类（不要求相邻），省 token 最多，
+    #     但会把同模板行汇总到首次出现的位置，属于有损概览。
+    # 两种作用域都受 fold_repeats 开关控制，且都不会折叠
+    # WARNING / ERROR / CRITICAL 级别的行。
+    fold_scope: str = Field(
+        default="adjacent",
+        validation_alias=AliasChoices("fold_scope", "LOG_FOLD_SCOPE"),
+    )
+    # query_logs 未显式传 exclude_loggers 时默认排除的 logger 名（黑名单）。
+    # 库级 trace / access 日志（如 ``httpcore._trace``、
+    # ``uvicorn.protocols.http.h11_impl``）在业务排查中价值极低，但
+    # "隐藏内容"必须是用户主动选择的，因此这里**默认空列表 = 开箱不排除**；
+    # 需要长期屏蔽某些噪音源时才在部署侧配置。
+    # 环境变量用逗号分隔，例如 ``LOG_DEFAULT_EXCLUDE_LOGGERS=httpcore.*,uvicorn.*``。
+    # 命中黑名单但级别为 WARNING / ERROR / CRITICAL 的行 **永不** 被排除。
+    default_exclude_loggers: Annotated[List[str], NoDecode] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices(
+            "default_exclude_loggers", "LOG_DEFAULT_EXCLUDE_LOGGERS"
+        ),
+    )
+    # normal 模式下是否去掉正文开头与行首时间戳重复的时间戳。
+    # 仅 normal 生效——compact 行首没有时间，正文里的时间戳是
+    # 唯一时间来源；full 是逃生舱，两者都不做这个处理。
+    # 默认 false：它会改写日志正文，而正文是排查依据，因此不作为默认
+    # 行为，需要省 token 时再显式开启。
+    dedup_timestamp: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("dedup_timestamp", "LOG_DEDUP_TIMESTAMP"),
+    )
+    # ---- A 档「零信息损失」正文瘦身（默认全部开启）---------------------
+    # 三项都不丢排查信息：时分秒 / 级别 / 模块名 / 行号 / 业务 ID /
+    # HTTP 状态码 / 异常关键字 / 堆栈缩进全部完好，且被提取或省略的内容
+    # 都会在返回体头部标注一次，用户可自行核对与还原。
+    # ``verbosity="full"`` 是绝对逃生舱，三项一律不生效。
+    #
+    # 是否把所有输出行的最长公共前缀（≥8 字符时）提到头部只输出一次。
+    # 同一批日志常共享时间 / 级别 / 模块的固定前缀，上提后每行只留差异
+    # 部分。compact / normal 均生效；只有 1 行、前缀太短、或前缀会把某行
+    # 完全吃掉（会出现空行）时自动放弃上提。
+    hoist_common_prefix: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("hoist_common_prefix", "LOG_HOIST_COMMON_PREFIX"),
+    )
+    # 是否把行内连续 ≥2 个**空格**压成 1 个（loguru 的级别对齐填充是
+    # 主要来源）。只处理空格字符，tab 与换行一律不碰。
+    # **行首缩进原样保留**——堆栈跟踪与 YAML / JSON 片段靠缩进表达结构。
+    # 日志语义从不依赖对齐空格数，因此零信息损失。compact / normal 均生效。
+    collapse_whitespace: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("collapse_whitespace", "LOG_COLLAPSE_WHITESPACE"),
+    )
+    # 是否省略正文开头重复的 ``YYYY-MM-DD `` 日期，**仅 compact 生效**。
+    # ``HH:MM:SS(.mmm)`` 一定保留——compact 行首没有时间，正文里的时间戳是
+    # 唯一时间来源。**跨天自动整批禁用**：批次里出现 ≥2 个不同日期就完全
+    # 保持原样（跨天时日期是判断顺序的关键）。
+    # normal 行首已有 MM-DD 短日期，改由 dedup_timestamp 处理。
+    hoist_common_date: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("hoist_common_date", "LOG_HOIST_COMMON_DATE"),
     )
 
     # download_logs 未显式传 fmt 时的默认下载格式。默认 txt（已瘦身：
@@ -346,6 +418,32 @@ class LogConfig(BaseSettings):
                 "(use 'compact', 'normal' or 'full')"
             )
         return v
+
+    @field_validator("fold_scope")
+    @classmethod
+    def _validate_fold_scope(cls, v: str) -> str:
+        v = (v or "adjacent").strip().lower()
+        if v not in ("adjacent", "global"):
+            raise ValueError(f"Invalid fold_scope: {v!r} (use 'adjacent' or 'global')")
+        return v
+
+    @field_validator("default_exclude_loggers", mode="before")
+    @classmethod
+    def _validate_default_exclude_loggers(cls, v: Any) -> List[str]:
+        """把逗号分隔字符串 / 列表统一解析成去空白后的 logger 模式列表。
+
+        与 ``tenants`` / ``client_tenants`` 保持一致的解析风格：忽略
+        空白与空 token，未配置时返回空列表（= 不排除任何 logger）。
+        """
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [p.strip() for p in v.split(",") if p.strip()]
+        if isinstance(v, (list, tuple)):
+            return [str(p).strip() for p in v if str(p).strip()]
+        raise ValueError(
+            "default_exclude_loggers must be a comma-separated string or a list"
+        )
 
     @field_validator("default_download_format")
     @classmethod

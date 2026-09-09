@@ -44,12 +44,37 @@ data:
   # query_logs 默认详略档位：compact（默认）/ normal / full。
   #   * compact —— 只输出日志正文，一行一条；token 开销最低。
   #   * normal  —— 正文 + 短格式时间 + 差异标签，公共标签提到头部。
-  #   * full    —— 历史完整格式（Entry 头 + 纳秒时间 + 全量标签）。
+  #   * full    —— 完整格式（Entry 头 + 纳秒时间 + 全量标签）。
   LOG_DEFAULT_VERBOSITY: "compact"
   # compact / normal 单条日志行最大字符数，超过截断（full 不截断）。
   LOG_MAX_LINE_CHARS: "2000"
   # compact 模式是否折叠连续同模板重复行（≥3 条折叠为一条并标 ×N）。
   LOG_FOLD_REPEATS: "true"
+  # compact / normal 是否剥离正文中的 ANSI 颜色码（零信息损失，full 不剥离）。
+  LOG_STRIP_ANSI: "true"
+  # compact 折叠作用域：adjacent（默认，只折连续行，不打乱时序）/
+  # global（全窗口按模板聚类，省 token 最多但属有损概览）。
+  # 两者都不会折叠 WARNING / ERROR / CRITICAL 行。
+  LOG_FOLD_SCOPE: "adjacent"
+  # query_logs 未显式传 exclude_loggers 时默认排除的 logger 名（逗号分隔）。
+  # 默认空 = 开箱不排除任何 logger（"隐藏内容"必须由用户主动选择）。
+  # 支持 fnmatch 通配；WARNING / ERROR / CRITICAL 行与解析不出 logger 的行
+  # 永不被排除；full 模式不生效。
+  # LOG_DEFAULT_EXCLUDE_LOGGERS: "httpcore.*,uvicorn.protocols.http.h11_impl"
+  # normal 模式下是否去掉正文开头与行首重复的时间戳（仅 normal 生效；
+  # compact 行首没有时间，恒不去重；full 不处理）。
+  LOG_DEDUP_TIMESTAMP: "false"
+  # ---- A 档「零信息损失」正文瘦身（默认全开，full 模式一律不生效）------
+  # 三项都不丢排查信息（时分秒 / 级别 / 模块名 / 行号 / 业务 ID / HTTP 状态码 /
+  # 堆栈缩进全部完好），被提取或省略的内容都会在返回体头部标注一次。
+  # 所有输出行的最长公共前缀（≥8 字符）提到头部只输出一次（compact / normal）。
+  LOG_HOIST_COMMON_PREFIX: "true"
+  # 行内连续 ≥2 个空格压成 1 个（只处理空格，tab 不碰）；行首缩进原样
+  # 保留（compact / normal）。
+  LOG_COLLAPSE_WHITESPACE: "true"
+  # 省略正文开头重复的 "YYYY-MM-DD " 日期，时分秒一定保留（仅 compact；
+  # 跨天时整批禁用）。
+  LOG_HOIST_COMMON_DATE: "true"
   # download_logs 未显式传 fmt 时的默认格式：txt（已瘦身）/ jsonl / csv。
   LOG_DEFAULT_DOWNLOAD_FORMAT: "txt"
 

@@ -429,3 +429,48 @@ class FanoutBackend(LogBackend):
                 continue
             total += int(res)
         return total
+
+    async def count_logs_grouped(
+        self,
+        query: str,
+        tenant: str,
+        start: datetime,
+        end: datetime,
+        by_label: str,
+        instance: Optional[str] = None,
+        cluster_errors: Optional[Dict[str, str]] = None,
+    ) -> Optional[Dict[str, int]]:
+        """跨集群合并分组计数：同一标签值的条数相加。
+
+        只要 **有任一集群** 成功下推就返回合并结果（并把失败集群记入
+        ``cluster_errors``）；全部集群都无法下推（返回 ``None``）或全部
+        失败时返回 ``None``，交由工具层退化为抽样估算。
+        """
+        active = self._resolve_instance(self._active_backends(), instance)
+
+        async def call(backend: LogBackend):
+            return await backend.count_logs_grouped(
+                query=query,
+                tenant=tenant,
+                start=start,
+                end=end,
+                by_label=by_label,
+            )
+
+        results = await asyncio.gather(
+            *(self._run(b, call) for b in active),
+            return_exceptions=True,
+        )
+        self._record_failures(
+            active, results, cluster_errors, op="count_logs_grouped", tenant=tenant
+        )
+
+        merged: Dict[str, int] = {}
+        any_pushed_down = False
+        for res in results:
+            if isinstance(res, BaseException) or res is None:
+                continue
+            any_pushed_down = True
+            for key, count in res.items():
+                merged[key] = merged.get(key, 0) + int(count)
+        return merged if any_pushed_down else None

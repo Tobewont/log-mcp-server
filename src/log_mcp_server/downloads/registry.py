@@ -15,6 +15,7 @@
 线程 / 事件循环安全：所有变更操作都在 :class:`asyncio.Lock` 保护下
 进行。注册表在 FastMCP lifespan 内创建，每个服务进程仅一个实例。
 """
+
 from __future__ import annotations
 
 import asyncio

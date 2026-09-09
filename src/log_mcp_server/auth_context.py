@@ -21,6 +21,7 @@ MCP 客户端告诉服务端"本会话允许访问哪些租户"，目前有两�
 请求头 / 环境变量，所以它的目的是防止 AI / 用户误操作，而不是承担
 安全边界。
 """
+
 from __future__ import annotations
 
 from typing import List, Optional
