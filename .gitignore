@@ -187,3 +187,6 @@ config.yaml
 *.swp
 *.swo
 *~
+
+# Agnes 工作目录（会话产物 / 下载的日志样本 / 上传附件，不入库）
+.agnes/
